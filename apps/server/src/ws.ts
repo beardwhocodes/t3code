@@ -1013,12 +1013,19 @@ const makeWsRpcLayer = (
           }
 
           let createdWorktreePath: string | null = null;
+          // The repo the worktree was created in, captured alongside the path.
+          // `config.cwd` is the SERVER's process cwd, which is only the project
+          // repo when the server happens to have been launched inside it — not
+          // true for the desktop app, for `npx t3` run from a home directory, or
+          // for any second project. Removing against it silently does nothing and
+          // leaves the worktree and its branch behind for good.
+          let createdWorktreeRepoCwd: string | null = null;
           const removeCreatedWorktree = () =>
-            createdWorktreePath === null
+            createdWorktreePath === null || createdWorktreeRepoCwd === null
               ? Effect.void
               : gitWorkflow
                   .removeWorktree({
-                    cwd: config.cwd,
+                    cwd: createdWorktreeRepoCwd,
                     path: createdWorktreePath,
                     force: true,
                   })
@@ -1074,6 +1081,7 @@ const makeWsRpcLayer = (
                 path: null,
               });
               createdWorktreePath = worktree.worktree.path;
+              createdWorktreeRepoCwd = project.value.workspaceRoot;
               worktreePath = worktree.worktree.path;
               branch = worktree.worktree.refName;
 

@@ -2463,6 +2463,76 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("keeps a fork's inherited transcript when the fork reverts its own turns", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+
+      // Inherited rows keep the SOURCE's turn id, and a fork copies no turn rows,
+      // so every revert rule — all of which retain by turn — would drop them. The
+      // loss is permanent: a fork is one event by design, so nothing replays the
+      // copy back. Written straight to the projection because that is exactly the
+      // state the fork copy leaves behind.
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, attachments_json,
+          is_streaming, created_at, updated_at
+        )
+        VALUES
+          ('fork:thread-revert-fork:assistant-inherited', 'thread-revert-fork',
+           'parent-turn-9', 'assistant', 'inherited', NULL, 0, ${now}, ${now}),
+          ('fork:thread-revert-fork:user-inherited', 'thread-revert-fork',
+           'parent-turn-9', 'user', 'inherited ask', NULL, 0, ${now}, ${now})
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+          sequence, created_at
+        )
+        VALUES ('fork:thread-revert-fork:activity-inherited', 'thread-revert-fork',
+                'parent-turn-9', 'info', 'tool.call', 'inherited', '{}', 1, ${now})
+      `;
+
+      yield* eventStore.append({
+        type: "thread.reverted",
+        eventId: EventId.make("evt-revert-fork-1"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-revert-fork"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-revert-fork-1"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-revert-fork-1"),
+        metadata: {},
+        payload: { threadId: ThreadId.make("thread-revert-fork"), turnCount: 0 },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      // Reverting to turn 0 retains nothing by turn — the worst case.
+      const messageRows = yield* sql<{ readonly messageId: string }>`
+        SELECT message_id AS "messageId"
+        FROM projection_thread_messages
+        WHERE thread_id = 'thread-revert-fork'
+        ORDER BY message_id ASC
+      `;
+      assert.deepEqual(
+        messageRows.map((row) => row.messageId),
+        ["fork:thread-revert-fork:assistant-inherited", "fork:thread-revert-fork:user-inherited"],
+      );
+
+      const activityRows = yield* sql<{ readonly activityId: string }>`
+        SELECT activity_id AS "activityId"
+        FROM projection_thread_activities
+        WHERE thread_id = 'thread-revert-fork'
+      `;
+      assert.deepEqual(
+        activityRows.map((row) => row.activityId),
+        ["fork:thread-revert-fork:activity-inherited"],
+      );
+    }),
+  );
+
   it.effect("copies a forked thread's history without stealing the source's rows", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

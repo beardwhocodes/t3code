@@ -730,11 +730,16 @@ const make = Effect.gen(function* () {
     // the sibling's uncommitted edits and untracked files without warning, and leave
     // its agent describing a filesystem that no longer exists. Refuse instead.
     const shell = yield* projectionSnapshotQuery.getShellSnapshot();
+    // Compare the RESOLVED workspace, not the raw column. A thread with no
+    // worktree runs at its project's root, so two such threads share a directory
+    // while both columns read null — and that is the pairing the fork dialog's
+    // "share this worktree" option produces most often. Matching on the column
+    // alone would skip exactly the case this guard exists for.
     const sharingThread = shell.threads.find(
       (other) =>
         other.id !== event.payload.threadId &&
-        other.worktreePath !== null &&
-        other.worktreePath === thread.worktreePath,
+        resolveThreadWorkspaceCwd({ thread: other, projects: shell.projects }) ===
+          sessionRuntime.value.cwd,
     );
     if (sharingThread) {
       yield* appendRevertFailureActivity({

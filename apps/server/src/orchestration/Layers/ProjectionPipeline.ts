@@ -14,6 +14,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import { FORK_ROW_ID_PREFIX } from "../../persistence/forkRowIds.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
@@ -203,6 +204,22 @@ function deriveHasActionableProposedPlan(input: {
   return latestPlan !== null && latestPlan.implementedAt === null;
 }
 
+/**
+ * Whether a projected row was inherited from a forked thread's source.
+ *
+ * A fork copies the source's rows with ids derived by `forkRowId`, and keeps the
+ * SOURCE's `turn_id` on them. It copies no turn rows of its own, so those turn
+ * ids match nothing in the fork and every revert rule below — all of which retain
+ * by turn — would drop the entire inherited transcript. That loss is permanent:
+ * the copy is the only record, because a fork is one event by design.
+ *
+ * Inherited rows are never a revert target. They predate every turn this thread
+ * ran, so no revert of this thread's turns can be about them.
+ */
+function isInheritedForkRow(id: string): boolean {
+  return id.startsWith(`${FORK_ROW_ID_PREFIX}:`);
+}
+
 function retainProjectionMessagesAfterRevert(
   messages: ReadonlyArray<ProjectionThreadMessage>,
   turns: ReadonlyArray<ProjectionTurn>,
@@ -229,7 +246,7 @@ function retainProjectionMessagesAfterRevert(
   }
 
   for (const message of messages) {
-    if (message.role === "system") {
+    if (message.role === "system" || isInheritedForkRow(message.messageId)) {
       retainedMessageIds.add(message.messageId);
       continue;
     }
@@ -239,7 +256,10 @@ function retainProjectionMessagesAfterRevert(
   }
 
   const retainedUserCount = messages.filter(
-    (message) => message.role === "user" && retainedMessageIds.has(message.messageId),
+    (message) =>
+      message.role === "user" &&
+      !isInheritedForkRow(message.messageId) &&
+      retainedMessageIds.has(message.messageId),
   ).length;
   const missingUserCount = Math.max(0, turnCount - retainedUserCount);
   if (missingUserCount > 0) {
@@ -262,7 +282,10 @@ function retainProjectionMessagesAfterRevert(
   }
 
   const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.messageId),
+    (message) =>
+      message.role === "assistant" &&
+      !isInheritedForkRow(message.messageId) &&
+      retainedMessageIds.has(message.messageId),
   ).length;
   const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
   if (missingAssistantCount > 0) {
@@ -303,7 +326,10 @@ function retainProjectionActivitiesAfterRevert(
       .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
   );
   return activities.filter(
-    (activity) => activity.turnId === null || retainedTurnIds.has(activity.turnId),
+    (activity) =>
+      isInheritedForkRow(activity.activityId) ||
+      activity.turnId === null ||
+      retainedTurnIds.has(activity.turnId),
   );
 }
 
@@ -323,7 +349,10 @@ function retainProjectionProposedPlansAfterRevert(
       .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
   );
   return proposedPlans.filter(
-    (proposedPlan) => proposedPlan.turnId === null || retainedTurnIds.has(proposedPlan.turnId),
+    (proposedPlan) =>
+      isInheritedForkRow(proposedPlan.planId) ||
+      proposedPlan.turnId === null ||
+      retainedTurnIds.has(proposedPlan.turnId),
   );
 }
 
@@ -390,6 +419,35 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     },
   );
 
+  /**
+   * Attachment ids that threads forked from this one still render.
+   *
+   * Attachment ids embed the id of the thread that UPLOADED them, and a fork copies
+   * message rows with their `attachments_json` verbatim. So a thread's files remain
+   * live for its forks after the thread itself drops them — whether by deletion or
+   * by a revert that prunes past turns. Removing them by segment alone blanks out
+   * images on threads the user never touched, with no error anywhere.
+   */
+  const collectForkReferencedAttachmentIds = Effect.fn("collectForkReferencedAttachmentIds")(
+    function* (threadId: string) {
+      const forkThreadIds = yield* projectionThreadRepository.listForkThreadIds({
+        threadId: ThreadId.make(threadId),
+      });
+      const referenced = new Set<string>();
+      for (const forkThreadId of forkThreadIds) {
+        const messages = yield* projectionThreadMessageRepository.listByThreadId({
+          threadId: forkThreadId,
+        });
+        for (const message of messages) {
+          for (const attachment of message.attachments ?? []) {
+            referenced.add(attachment.id);
+          }
+        }
+      }
+      return referenced;
+    },
+  );
+
   const deleteThreadAttachments = Effect.fn("deleteThreadAttachments")(function* (
     threadId: string,
   ) {
@@ -407,20 +465,7 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     // segment alone would blank out those images with no error anywhere, on
     // threads the user never touched. Keep anything another live thread still
     // references.
-    const forkThreadIds = yield* projectionThreadRepository.listForkThreadIds({
-      threadId: ThreadId.make(threadId),
-    });
-    const referencedElsewhere = new Set<string>();
-    for (const forkThreadId of forkThreadIds) {
-      const messages = yield* projectionThreadMessageRepository.listByThreadId({
-        threadId: forkThreadId,
-      });
-      for (const message of messages) {
-        for (const attachment of message.attachments ?? []) {
-          referencedElsewhere.add(attachment.id);
-        }
-      }
-    }
+    const referencedElsewhere = yield* collectForkReferencedAttachmentIds(threadId);
 
     const entries = yield* readAttachmentRootEntries;
     yield* Effect.forEach(
@@ -435,6 +480,7 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
   const pruneThreadAttachmentEntry = Effect.fn("pruneThreadAttachmentEntry")(function* (
     threadSegment: string,
     keptThreadRelativePaths: Set<string>,
+    keepAttachmentIds: ReadonlySet<string>,
     entry: string,
   ) {
     const relativePath = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
@@ -443,6 +489,9 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     }
     const attachmentId = parseAttachmentIdFromRelativePath(relativePath);
     if (!attachmentId) {
+      return;
+    }
+    if (keepAttachmentIds.has(attachmentId)) {
       return;
     }
     const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachmentId);
@@ -475,10 +524,20 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
       return;
     }
 
+    // Same rule as the delete path: a revert drops this thread's past turns, but
+    // its forks still render the attachments those turns uploaded.
+    const referencedElsewhere = yield* collectForkReferencedAttachmentIds(threadId);
+
     const entries = yield* readAttachmentRootEntries;
     yield* Effect.forEach(
       entries,
-      (entry) => pruneThreadAttachmentEntry(threadSegment, keptThreadRelativePaths, entry),
+      (entry) =>
+        pruneThreadAttachmentEntry(
+          threadSegment,
+          keptThreadRelativePaths,
+          referencedElsewhere,
+          entry,
+        ),
       { concurrency: 1 },
     );
   });

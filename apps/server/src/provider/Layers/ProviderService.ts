@@ -617,6 +617,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               `Cannot fork thread '${input.forkFrom.threadId}': it has no provider conversation to fork from.`,
             );
           }
+          // A resume cursor is provider-opaque, so seeding one instance's session
+          // from another's cursor does not fail — the adapter simply finds nothing
+          // it recognises and starts empty, under a fully rendered inherited
+          // transcript. The usual driver and continuation-key checks cannot catch
+          // this: they are gated on the thread already having a session, and a fork
+          // has none until this call, so its model is freely switchable until now.
+          if (
+            sourceBinding.providerInstanceId !== undefined &&
+            sourceBinding.providerInstanceId !== resolvedInstanceId
+          ) {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              `Cannot fork thread '${input.forkFrom.threadId}' into provider instance '${resolvedInstanceId}': its conversation belongs to '${sourceBinding.providerInstanceId}'.`,
+            );
+          }
           return { ...input.forkFrom, resumeCursor: sourceBinding.resumeCursor };
         });
 
