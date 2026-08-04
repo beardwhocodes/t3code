@@ -995,6 +995,79 @@ describe("CheckpointReactor", () => {
     ).toBe(true);
   });
 
+  it("refuses a checkpoint revert when another thread shares the workspace", async () => {
+    const harness = await createHarness({ secondThreadSharingWorktree: true });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-shared"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+
+    for (const turnCount of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-diff-shared-${turnCount}`),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+
+    // Uncommitted, untracked work belonging to the OTHER thread in the same
+    // directory. `git clean -fd` would remove it.
+    const siblingWork = NodePath.join(harness.cwd, "sibling-uncommitted.txt");
+    NodeFS.writeFileSync(siblingWork, "work the other thread has not committed\n");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert-shared"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await harness.drain();
+
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+
+    // Assert the refusal from several angles: a test that only checked for the
+    // absence of `thread.reverted` would also pass if revert broke for an
+    // unrelated reason.
+    expect(
+      thread?.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    ).toBe(true);
+    expect(NodeFS.existsSync(siblingWork)).toBe(true);
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    expect(thread?.checkpoints).toHaveLength(2);
+    expect(
+      gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
+    ).toBe(true);
+  });
+
   it("executes provider revert and emits thread.reverted for checkpoint revert requests", async () => {
     const harness = await createHarness();
     const createdAt = "2026-01-01T00:00:00.000Z";
