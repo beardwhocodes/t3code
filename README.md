@@ -1,3 +1,11 @@
+# Fork for Forking Threads
+
+See the FORK-NOTES.md
+
+<img width="358" height="181" alt="SCR-20260804-klwh" src="https://github.com/user-attachments/assets/9daff723-2225-442e-a0fe-8241c2282092" />
+<img width="656" height="525" alt="SCR-20260804-klxw" src="https://github.com/user-attachments/assets/73cd586c-9524-4ed8-b0ae-974fe87974ce" />
+<img width="808" height="361" alt="SCR-20260804-kltu" src="https://github.com/user-attachments/assets/42b3f898-2fe6-4447-bfaf-8fcc254cc64d" />
+
 # T3 Code
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
