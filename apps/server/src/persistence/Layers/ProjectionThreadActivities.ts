@@ -7,8 +7,10 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
+import { FORK_ROW_ID_PREFIX } from "../forkRowIds.ts";
 
 import {
+  CopyProjectionThreadActivitiesInput,
   DeleteProjectionThreadActivitiesInput,
   ListProjectionThreadActivitiesInput,
   ProjectionThreadActivity,
@@ -97,6 +99,39 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const copyProjectionThreadActivityRows = SqlSchema.void({
+    Request: CopyProjectionThreadActivitiesInput,
+    execute: ({ sourceThreadId, targetThreadId }) =>
+      sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          ${`${FORK_ROW_ID_PREFIX}:${targetThreadId}:`} || activity_id,
+          ${targetThreadId},
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        FROM projection_thread_activities
+        WHERE thread_id = ${sourceThreadId}
+          AND NOT EXISTS (
+            SELECT 1 FROM projection_thread_activities WHERE thread_id = ${targetThreadId}
+          )
+      `,
+  });
+
   const deleteProjectionThreadActivityRows = SqlSchema.void({
     Request: DeleteProjectionThreadActivitiesInput,
     execute: ({ threadId }) =>
@@ -146,10 +181,18 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  const copyThreadHistory: ProjectionThreadActivityRepositoryShape["copyThreadHistory"] = (input) =>
+    copyProjectionThreadActivityRows(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadActivityRepository.copyThreadHistory:query"),
+      ),
+    );
+
   return {
     upsert,
     listByThreadId,
     deleteByThreadId,
+    copyThreadHistory,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });
 

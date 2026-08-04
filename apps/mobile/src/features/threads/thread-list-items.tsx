@@ -414,6 +414,12 @@ const THREAD_ROW_MENU_ACTIONS: MenuAction[] = [
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
+const THREAD_ROW_FORK_MENU_ACTIONS: MenuAction[] = [
+  { id: "archive", title: "Archive", image: "archivebox" },
+  { id: "fork", title: "Fork thread", image: "arrow.triangle.branch" },
+  { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
+];
+
 export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly variant: ThreadListVariant;
   readonly thread: EnvironmentThreadShell;
@@ -429,6 +435,11 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
+  readonly onForkThread: (thread: EnvironmentThreadShell) => void;
+  /** Per THREAD, not per environment: the server must understand forks AND the
+      thread's provider instance must be able to fork its session. False hides
+      the entry rather than failing on use. */
+  readonly forkSupported: boolean;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   readonly simultaneousSwipeGesture?: ComponentProps<
@@ -450,13 +461,22 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const pressedBackgroundColor = useThemeColor("--color-subtle");
   const selectedBackgroundColor = useThemeColor("--color-user-bubble");
 
-  const { thread, onSelectThread, onArchiveThread, onDeleteThread } = props;
+  const { thread, onSelectThread, onArchiveThread, onDeleteThread, onForkThread } = props;
   const status = resolveThreadStatus(thread);
   const pr = useThreadPr(thread, props.projectCwd);
   const timestamp = relativeTime(
     thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
   );
-  const threadAccessibilityLabel = pr ? `${thread.title}, ${pr.accessibilityLabel}` : thread.title;
+  // A shared-worktree fork carries its parent's title, branch, project and
+  // model, so the row is otherwise identical to the thread it came from.
+  const forked = thread.forkedFrom != null;
+  const threadAccessibilityLabel = [
+    thread.title,
+    forked ? "forked thread" : null,
+    pr ? pr.accessibilityLabel : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(", ");
   const subtitleParts = [props.environmentLabel, thread.branch].filter((part): part is string =>
     Boolean(part),
   );
@@ -467,9 +487,18 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     selected && status
       ? { ...status, pillClassName: "bg-white/20", textClassName: "text-white" }
       : status;
+  const forkGlyph = forked ? (
+    <SymbolView
+      name="arrow.triangle.branch"
+      size={compact ? 14 : 12}
+      tintColor={selected ? "#ffffff" : iconSubtleColor}
+      type="monochrome"
+    />
+  ) : null;
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleArchive = useCallback(() => onArchiveThread(thread), [onArchiveThread, thread]);
+  const handleFork = useCallback(() => onForkThread(thread), [onForkThread, thread]);
   const primaryAction = useMemo(
     () => ({
       accessibilityLabel: `Archive ${thread.title}`,
@@ -482,9 +511,10 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
       if (nativeEvent.event === "archive") handleArchive();
+      if (nativeEvent.event === "fork") handleFork();
       if (nativeEvent.event === "delete") handleDelete();
     },
-    [handleArchive, handleDelete],
+    [handleArchive, handleDelete, handleFork],
   );
 
   const statusPill = effectiveStatus ? (
@@ -560,6 +590,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
             }}
           >
             <View className="flex-row items-center justify-between gap-2">
+              {forkGlyph}
               <Text className="flex-1 text-lg font-t3-bold text-foreground" numberOfLines={1}>
                 {thread.title}
               </Text>
@@ -613,6 +644,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
       >
         <View className="gap-[3px]">
           <View className="flex-row items-center justify-between gap-2">
+            {forkGlyph}
             <Text
               className={cn(
                 "flex-1 text-base font-t3-medium",
@@ -673,7 +705,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
         // ControlPillMenu injects onLongPress into the row and anchors the
         // token-styled dropdown to it; taps and swipes are untouched.
         <ControlPillMenu
-          actions={THREAD_ROW_MENU_ACTIONS}
+          actions={props.forkSupported ? THREAD_ROW_FORK_MENU_ACTIONS : THREAD_ROW_MENU_ACTIONS}
           onPressAction={handleMenuAction}
           shouldOpenOnLongPress
         >

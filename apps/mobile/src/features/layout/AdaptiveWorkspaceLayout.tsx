@@ -472,6 +472,18 @@ function AdaptiveWorkspaceLayoutContent(
     ? Math.max(0, panes.contentPaneWidth - inspectorColumnTargetWidth)
     : null;
 
+  // The sidebar runs inside its own navigation-inert stack, so the fork sheet
+  // has to be presented from the root navigator here.
+  const handleForkThread = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      navigation.navigate("ForkThread", {
+        environmentId: String(thread.environmentId),
+        threadId: String(thread.id),
+      });
+    },
+    [navigation],
+  );
+
   const handleSelectThread = useCallback(
     (thread: EnvironmentThreadShell) => {
       const params = {
@@ -524,6 +536,7 @@ function AdaptiveWorkspaceLayoutContent(
                 onOpenSettings={handleOpenSettings}
                 onOpenEnvironmentSettings={handleOpenEnvironmentSettings}
                 onNewThreadInProject={handleNewThreadInProject}
+                onForkThread={handleForkThread}
                 onSelectThread={handleSelectThread}
                 onSearchQueryChange={setPrimarySidebarSearchQuery}
                 searchQuery={primarySidebarSearchQuery}

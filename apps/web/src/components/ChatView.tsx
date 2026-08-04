@@ -149,6 +149,7 @@ import {
   CheckCircle2Icon,
   ChevronDownIcon,
   GitBranchIcon,
+  GitForkIcon,
   TriangleAlertIcon,
   WifiOffIcon,
 } from "lucide-react";
@@ -176,7 +177,10 @@ import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { buildDraftThreadRouteParams } from "../threadRoutes";
+import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRoutes";
+import { requestThreadFork } from "../forkThreadBus";
+import { canForkThread } from "@t3tools/client-runtime/state/thread-fork";
+import { threadHasOwnTurns } from "../threadFork";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -2042,6 +2046,12 @@ function ChatViewContent(props: ChatViewProps) {
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
+  // Both fork gates are absent-means-false, so an older server or a provider
+  // instance that cannot seed a session hides every fork affordance.
+  const canForkActiveThread = Boolean(activeThread && canForkThread(activeThread, serverConfig));
+  const handleForkActiveThread = useCallback(() => {
+    if (activeThreadRef) requestThreadFork(activeThreadRef);
+  }, [activeThreadRef]);
   const unlockedSelectedProvider = resolveSelectableProvider(
     providerStatuses,
     selectedProviderByThreadId ?? threadProvider,
@@ -3921,12 +3931,16 @@ function ChatViewContent(props: ChatViewProps) {
     hasServerThread: isServerThread,
     draftThreadEnvMode: isLocalDraftThread ? draftThread?.envMode : undefined,
   });
+  // Spelled out rather than reusing `envLocked`: that flag also freezes the
+  // ENVIRONMENT picker, which must stay frozen for a fork (its history lives
+  // on one server). Only the workspace choice widens. For an ordinary thread
+  // this is the same condition as before — no own turns is no messages.
   const canOverrideServerThreadEnvMode = Boolean(
     isServerThread &&
     activeThread &&
-    activeThread.messages.length === 0 &&
+    !threadHasOwnTurns(activeThread) &&
     activeThread.worktreePath === null &&
-    !envLocked,
+    (activeThread.session === null || activeThread.session.status === "stopped"),
   );
   const envMode: DraftThreadEnvMode = canOverrideServerThreadEnvMode
     ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
@@ -4216,8 +4230,97 @@ function ChatViewContent(props: ChatViewProps) {
     }
     void handleSwitchCheckoutToThread();
   }, [gitStatusQuery.data?.hasWorkingTreeChanges, handleSwitchCheckoutToThread]);
+  // Lineage, both directions. A fork is otherwise invisible from inside the
+  // conversation: the copied history reads exactly like the parent's.
+  const threadForkOrigin = activeThread?.forkedFrom ?? null;
+  const forkParentShell = useThreadShell(
+    useMemo(
+      () =>
+        threadForkOrigin === null || !activeThread
+          ? null
+          : scopeThreadRef(activeThread.environmentId, threadForkOrigin.threadId),
+      [activeThread, threadForkOrigin],
+    ),
+  );
+  const navigateToThreadId = useCallback(
+    (targetEnvironmentId: EnvironmentId, targetThreadId: ThreadId) => {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(scopeThreadRef(targetEnvironmentId, targetThreadId)),
+      });
+    },
+    [navigate],
+  );
+  /**
+   * The fork seam rendered inside the transcript. Lineage lives there rather
+   * than in a banner because the useful part is WHERE the split happened —
+   * everything above the line is the parent's conversation.
+   */
+  const timelineForkOrigin = useMemo(() => {
+    if (threadForkOrigin === null || !activeThread) return null;
+    return {
+      parentThreadId: threadForkOrigin.threadId,
+      parentTitle: forkParentShell?.title ?? null,
+      forkedAt: activeThread.createdAt,
+    };
+  }, [activeThread, forkParentShell, threadForkOrigin]);
+  const openForkParent = useCallback(
+    (parentThreadId: ThreadId) => {
+      if (!activeThread) return;
+      navigateToThreadId(
+        forkParentShell?.environmentId ?? activeThread.environmentId,
+        parentThreadId,
+      );
+    },
+    [activeThread, forkParentShell, navigateToThreadId],
+  );
+  /**
+   * Only the caveat, not the lineage: two threads driving one directory is a
+   * live operational warning, and a hairline row inside the transcript is the
+   * wrong weight for it.
+   */
+  const forkLineageBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    if (
+      threadForkOrigin === null ||
+      !activeThread ||
+      activeThread.worktreePath === null ||
+      forkParentShell === null ||
+      forkParentShell.worktreePath !== activeThread.worktreePath
+    ) {
+      return null;
+    }
+    return {
+      id: `thread-fork-shared-worktree:${threadForkOrigin.threadId}`,
+      variant: "info",
+      icon: <GitForkIcon />,
+      title: (
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="shrink-0 font-normal text-muted-foreground">
+            Sharing a worktree with
+          </span>
+          <span className="min-w-0 truncate font-medium text-foreground">
+            {forkParentShell.title}
+          </span>
+        </span>
+      ),
+      description:
+        "Both threads edit the same files, so each turn's diff includes the other's edits and reverting is disabled.",
+      actions: (
+        <Button
+          size="xs"
+          variant="outline"
+          onClick={() => navigateToThreadId(forkParentShell.environmentId, forkParentShell.id)}
+        >
+          Open parent
+        </Button>
+      ),
+    };
+  }, [activeThread, forkParentShell, navigateToThreadId, threadForkOrigin]);
   const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
-    const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
+    const parkedThreadItems = [
+      ...(forkLineageBannerItem === null ? [] : [forkLineageBannerItem]),
+      ...(parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem]),
+    ];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [...systemComposerBannerItems, ...parkedThreadItems];
     }
@@ -4266,6 +4369,7 @@ function ChatViewContent(props: ChatViewProps) {
     ];
   }, [
     activeBranchMismatchKey,
+    forkLineageBannerItem,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,
     localCheckoutBranchMismatch,
@@ -4656,7 +4760,11 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     const threadIdForSend = activeThread.id;
-    const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
+    // A fork opens with the parent's copied history, so the message count can
+    // never answer "has this thread run yet". Counting its OWN turns keeps the
+    // lazy worktree bootstrap reachable for a fork that has not started, which
+    // is what stops the fork dialog's workspace pick from being a one-way door.
+    const isFirstMessage = !isServerThread || !threadHasOwnTurns(activeThread);
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
@@ -5771,6 +5879,8 @@ function ChatViewContent(props: ChatViewProps) {
             availableEditors={availableEditors}
             rightPanelOpen={rightPanelOpen}
             gitCwd={gitCwd}
+            canForkThread={canForkActiveThread}
+            onForkThread={handleForkActiveThread}
             onNewThreadInProject={handleNewThreadInActiveProject}
             onRunProjectScript={runProjectScript}
             onAddProjectScript={saveProjectScript}
@@ -5814,6 +5924,8 @@ function ChatViewContent(props: ChatViewProps) {
                 activeThreadEnvironmentId={activeThread.environmentId}
                 routeThreadKey={routeThreadKey}
                 onOpenTurnDiff={onOpenTurnDiff}
+                forkOrigin={timelineForkOrigin}
+                onOpenForkParent={openForkParent}
                 revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                 onRevertUserMessage={onRevertUserMessage}
                 isRevertingCheckpoint={isRevertingCheckpoint}

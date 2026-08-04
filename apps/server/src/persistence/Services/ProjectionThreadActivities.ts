@@ -38,6 +38,12 @@ export const ListProjectionThreadActivitiesInput = Schema.Struct({
 });
 export type ListProjectionThreadActivitiesInput = typeof ListProjectionThreadActivitiesInput.Type;
 
+export const CopyProjectionThreadActivitiesInput = Schema.Struct({
+  sourceThreadId: ThreadId,
+  targetThreadId: ThreadId,
+});
+export type CopyProjectionThreadActivitiesInput = typeof CopyProjectionThreadActivitiesInput.Type;
+
 export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -72,6 +78,21 @@ export interface ProjectionThreadActivityRepositoryShape {
    */
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadActivitiesInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Copy one thread's activities onto another thread, for a fork.
+   *
+   * `activity_id` is a GLOBAL primary key AND is the id of the event that appended
+   * the activity, so minting fresh event ids does not remap it. Each copied row
+   * therefore gets a derived id via `forkRowId`; reusing the source id would move
+   * the source's row onto the fork.
+   *
+   * Preserves `sequence`, `turn_id` and `created_at` so the fork's activity order
+   * matches the source's. A no-op when the target already has any activity.
+   */
+  readonly copyThreadHistory: (
+    input: CopyProjectionThreadActivitiesInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

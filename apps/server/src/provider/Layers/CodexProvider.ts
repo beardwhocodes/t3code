@@ -601,6 +601,9 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     checkedAt,
     models: snapshot.models,
     skills: snapshot.skills,
+    // The app-server exposes `thread/fork`, which loads the source rollout from
+    // disk and copies it, so a healthy Codex instance can always fork.
+    supportsThreadFork: true,
     probe: {
       installed: true,
       version: snapshot.version ?? null,

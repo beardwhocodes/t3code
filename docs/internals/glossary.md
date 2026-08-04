@@ -26,13 +26,19 @@ The root filesystem path for a project. In [the orchestration model][1], it is t
 
 #### Worktree
 
-A Git worktree used as an isolated workspace for a thread. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree. Git operations live behind the VCS driver contract in `apps/server/src/vcs/VcsDriver.ts`, implemented by [GitVcsDriverCore.ts][3].
+A Git worktree used as an isolated workspace for a thread. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree. A worktree is not always exclusive: a [fork](#fork) created in `shared` mode points at the source thread's `worktreePath`, so two threads drive one directory. Git operations live behind the VCS driver contract in `apps/server/src/vcs/VcsDriver.ts`, implemented by [GitVcsDriverCore.ts][3].
 
 ### Thread timeline
 
 #### Thread
 
 The main durable unit of conversation and workspace history. In [the orchestration contracts][1], a thread holds messages, activities, checkpoints, and session-related state. See [projector.ts][4].
+
+#### Fork
+
+A thread seeded from another thread. The fork takes a copy of the source's projected history (messages, activities, and proposed plans), and its first session start seeds the provider session from the source's, so the agent keeps its memory of that conversation. Turn rows are deliberately not copied: they carry `checkpoint_ref` values namespaced to the source thread, and a revert in the fork would delete the source's checkpoint history. The fork starts its own checkpoint timeline, so it cannot show file diffs for the turns it inherited — those stay on the source. In [the contracts][1] a fork is a `thread.create` command carrying `forkedFrom`, not a command or event type of its own, and the created thread and thread shell then carry a `ThreadForkOrigin`. The history rows are copied by [ProjectionPipeline.ts][11] in the same transaction as the event.
+
+Call it a fork, never a branch. `OrchestrationThread.branch` already means the thread's Git branch, and a fork either shares the source's branch or gets its own depending on its worktree mode. See [overview.md][24] for the command shape, [providers.md][16] for the provider capability, and [forking threads][25] for what a user sees.
 
 #### Turn
 
@@ -179,3 +185,4 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [22]: ../../apps/server/src/checkpointing/Utils.ts
 [23]: ../../apps/server/src/checkpointing/Diffs.ts
 [24]: ./overview.md
+[25]: ../user/forking-threads.md

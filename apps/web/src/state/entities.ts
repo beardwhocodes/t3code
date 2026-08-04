@@ -20,6 +20,7 @@ import type {
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 import { useMemo } from "react";
+import { canForkThread } from "@t3tools/client-runtime/state/thread-fork";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom } from "./server";
@@ -222,6 +223,44 @@ export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | 
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
 }
 
+/**
+ * Resolve once the shell index knows about a thread the client just created.
+ * Deliberately the SHELL and not the detail: waiting on the detail atom would
+ * download a forked thread's entire copied history before the route can even
+ * change. Resolves false on timeout so callers can still navigate.
+ */
+export function waitForThreadShell(ref: ScopedThreadRef, timeoutMs = 1_000): Promise<boolean> {
+  const shellAtom = environmentThreadShells.threadShellAtom(ref);
+  const readShell = () => appAtomRegistry.get(shellAtom);
+  if (readShell() !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
+    let unsubscribe: (() => void) | null = null;
+    const finish = (found: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
+      unsubscribe?.();
+      resolve(found);
+    };
+    const subscription = appAtomRegistry.subscribe(shellAtom, (shell) => {
+      if (shell !== null) finish(true);
+    });
+    unsubscribe = subscription;
+    // A listener that fired synchronously settled before `unsubscribe` was
+    // assigned, so drop the subscription here instead of leaking it.
+    if (settled || readShell() !== null) {
+      subscription();
+      finish(true);
+      return;
+    }
+    timeoutId = globalThis.setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
 /** Whether the environment's server understands thread.settle/unsettle.
     False for pre-settlement servers (capability defaults false on decode),
     so clients under version skew fall back instead of erroring. */
@@ -239,6 +278,29 @@ export function readEnvironmentSupportsSnooze(environmentId: EnvironmentId): boo
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
       .threadSnooze === true
   );
+}
+
+/** Whether the environment's server understands `forkedFrom` on thread.create.
+    Same version-skew contract as snooze. This only answers "does this server
+    know how to fork"; whether the thread's provider instance can seed a new
+    session from an existing one is the separate `supportsThreadFork` flag on
+    its ServerProvider snapshot. */
+export function readEnvironmentSupportsThreadFork(environmentId: EnvironmentId): boolean {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .threadFork === true
+  );
+}
+
+export function readServerConfig(environmentId: EnvironmentId): ServerConfig | null {
+  return appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId) ?? null;
+}
+
+/** The shared fork availability rule answered from the store, for callers that
+    hold a thread ref but no thread — the `thread.fork` keybinding. */
+export function readCanForkThread(ref: ScopedThreadRef): boolean {
+  const thread = readThreadShell(ref);
+  return thread !== null && canForkThread(thread, readServerConfig(ref.environmentId));
 }
 
 export function readThreadDetail(ref: ScopedThreadRef): EnvironmentThread | null {

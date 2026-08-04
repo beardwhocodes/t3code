@@ -50,6 +50,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server understands regenerateTitle on thread.meta.update. Absent on
       older servers, so clients hide the action instead of sending it. */
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
+  /** Server understands `forkedFrom` on thread.create. Same version-skew
+      contract as threadSnooze. This answers "does this server know how to
+      fork at all"; whether a given provider instance can fork its session is
+      the separate `supportsThreadFork` flag on ServerProvider. Both must be
+      true before a client offers the action. */
+  threadFork: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */

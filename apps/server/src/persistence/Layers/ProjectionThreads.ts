@@ -8,13 +8,14 @@ import * as Struct from "effect/Struct";
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
   DeleteProjectionThreadInput,
+  ListForkThreadIdsInput,
   GetProjectionThreadInput,
   ListProjectionThreadsByProjectInput,
   ProjectionThread,
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
 } from "../Services/ProjectionThreads.ts";
-import { ModelSelection } from "@t3tools/contracts";
+import { ModelSelection, ThreadId } from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
@@ -49,6 +50,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           snoozed_at,
           title_regeneration_request_id,
           title_regeneration_started_at,
+          forked_from_thread_id,
+          forked_from_tip_turn_id,
+          forked_at,
           latest_user_message_at,
           pending_approval_count,
           pending_user_input_count,
@@ -74,6 +78,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.snoozedAt},
           ${row.titleRegenerationRequestId ?? null},
           ${row.titleRegenerationStartedAt ?? null},
+          ${row.forkedFromThreadId ?? null},
+          ${row.forkedFromTipTurnId ?? null},
+          ${row.forkedAt ?? null},
           ${row.latestUserMessageAt},
           ${row.pendingApprovalCount},
           ${row.pendingUserInputCount},
@@ -99,6 +106,15 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           snoozed_at = excluded.snoozed_at,
           title_regeneration_request_id = excluded.title_regeneration_request_id,
           title_regeneration_started_at = excluded.title_regeneration_started_at,
+          forked_from_thread_id = COALESCE(
+            excluded.forked_from_thread_id,
+            projection_threads.forked_from_thread_id
+          ),
+          forked_from_tip_turn_id = COALESCE(
+            excluded.forked_from_tip_turn_id,
+            projection_threads.forked_from_tip_turn_id
+          ),
+          forked_at = COALESCE(excluded.forked_at, projection_threads.forked_at),
           latest_user_message_at = excluded.latest_user_message_at,
           pending_approval_count = excluded.pending_approval_count,
           pending_user_input_count = excluded.pending_user_input_count,
@@ -131,6 +147,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           snoozed_at AS "snoozedAt",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
+          forked_from_thread_id AS "forkedFromThreadId",
+          forked_from_tip_turn_id AS "forkedFromTipTurnId",
+          forked_at AS "forkedAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -165,6 +184,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           snoozed_at AS "snoozedAt",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
+          forked_from_thread_id AS "forkedFromThreadId",
+          forked_from_tip_turn_id AS "forkedFromTipTurnId",
+          forked_at AS "forkedAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -173,6 +195,18 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         FROM projection_threads
         WHERE project_id = ${projectId}
         ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listForkThreadIdRows = SqlSchema.findAll({
+    Request: ListForkThreadIdsInput,
+    Result: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ threadId }) =>
+      sql`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        WHERE forked_from_thread_id = ${threadId}
+        ORDER BY created_at DESC, thread_id ASC
       `,
   });
 
@@ -205,11 +239,18 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.deleteById:query")),
     );
 
+  const listForkThreadIds: ProjectionThreadRepositoryShape["listForkThreadIds"] = (input) =>
+    listForkThreadIdRows(input).pipe(
+      Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.listForkThreadIds:query")),
+      Effect.map((rows) => rows.map((row) => row.threadId)),
+    );
+
   return {
     upsert,
     getById,
     listByProjectId,
     deleteById,
+    listForkThreadIds,
   } satisfies ProjectionThreadRepositoryShape;
 });
 

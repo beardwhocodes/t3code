@@ -53,6 +53,25 @@ Provider output comes back as internal commands such as `thread.message.assistan
 `thread.session.set`, which clients observe through `orchestration.subscribeThread`. See
 [overview.md](./overview.md) for the command/event loop.
 
+## Session forking
+
+`ProviderAdapterCapabilities.threadFork` in [`ProviderAdapter.ts`][adapter] says whether an adapter
+can seed a brand-new session from an existing one. `"provider-session"` means it honours
+`ProviderSessionStartInput.forkFrom`, so the new session carries the source thread's conversation as
+agent memory; `"unsupported"` means the fork action is hidden for that provider.
+
+Clients do not read the adapter capability. They read `supportsThreadFork` on the [`ServerProvider`
+snapshot][snapshot], which is set per instance and only where the CLI behind it really forks: Codex
+(`thread/fork` loads the source rollout and copies it), Claude (`resume` plus `forkSession` mints a
+new session id without writing the parent), and OpenCode (`session.fork` deep-copies the source's
+messages). Cursor and Grok speak ACP, which describes the capability, but neither CLI implements it,
+so their instances leave the flag absent. For ACP-backed instances the flag is discovered per
+connection, so it can flip after a CLI upgrade without a change here.
+
+Absent means false, unlike the older optional flags beside it in [`server.ts`][server-contracts].
+`ProviderSessionForkSource` is consumed exactly once, by the fork's first session start; see
+[overview.md](./overview.md) for the command shape and the two gates a client checks.
+
 ## Server-side workers
 
 Provider work flows through three queue-backed workers. All three are built with
@@ -82,6 +101,8 @@ when a request opens (approval) or user input is requested, via
 [grok]: ../../apps/server/src/provider/Drivers/GrokDriver.ts
 [opencode]: ../../apps/server/src/provider/Drivers/OpenCodeDriver.ts
 [adapter]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
+[snapshot]: ../../apps/server/src/provider/providerSnapshot.ts
+[server-contracts]: ../../packages/contracts/src/server.ts
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts
 [registry]: ../../apps/server/src/provider/Services/ProviderAdapterRegistry.ts
 [service]: ../../apps/server/src/provider/Layers/ProviderService.ts

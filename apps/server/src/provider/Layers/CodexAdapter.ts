@@ -1406,6 +1406,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
+          // The fork source's cursor names the Codex thread to copy. T3's TurnId
+          // for a Codex thread IS the app-server's turn id, so the recorded tip
+          // can be passed straight through as `lastTurnId` to pin the fork point.
+          ...(input.forkFrom && isCodexResumeCursorSchema(input.forkFrom.resumeCursor)
+            ? {
+                forkFrom: {
+                  threadId: input.forkFrom.resumeCursor.threadId,
+                  ...(input.forkFrom.tipTurnId ? { lastTurnId: input.forkFrom.tipTurnId } : {}),
+                },
+              }
+            : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
@@ -1703,6 +1714,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      threadFork: "provider-session",
     },
     startSession,
     sendTurn,

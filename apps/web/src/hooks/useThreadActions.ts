@@ -5,7 +5,16 @@ import {
 } from "@t3tools/client-runtime/environment";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { canSettle, canSnooze } from "@t3tools/client-runtime/state/thread-settled";
-import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import {
+  buildThreadForkCreateInput,
+  canForkThread,
+} from "@t3tools/client-runtime/state/thread-fork";
+import {
+  EnvironmentId,
+  type ScopedThreadRef,
+  ThreadId,
+  type ThreadForkWorktreeMode,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -13,6 +22,7 @@ import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef } from "react";
 
 import { getFallbackThreadIdAfterDelete } from "../components/Sidebar.logic";
+import { newThreadId } from "../lib/utils";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment } from "../state/threads";
@@ -23,9 +33,12 @@ import { readLocalApi } from "../localApi";
 import {
   readEnvironmentSupportsSettlement,
   readEnvironmentSupportsSnooze,
+  readEnvironmentSupportsThreadFork,
   readEnvironmentThreadRefs,
   readProject,
+  readServerConfig,
   readThreadShell,
+  waitForThreadShell,
 } from "../state/entities";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
@@ -94,6 +107,30 @@ export class ThreadSnoozeBlockedError extends Schema.TaggedErrorClass<ThreadSnoo
   }
 }
 
+export class ThreadForkUnsupportedError extends Schema.TaggedErrorClass<ThreadForkUnsupportedError>()(
+  "ThreadForkUnsupportedError",
+  {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  },
+) {
+  override get message(): string {
+    return "This environment's server does not support forking yet. Update the server to fork threads.";
+  }
+}
+
+export class ThreadForkBlockedError extends Schema.TaggedErrorClass<ThreadForkBlockedError>()(
+  "ThreadForkBlockedError",
+  {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  },
+) {
+  override get message(): string {
+    return "This thread cannot be forked. It needs a completed turn and no work in flight.";
+  }
+}
+
 export function useThreadActions() {
   const closeTerminal = useAtomCommand(terminalEnvironment.close);
   const archiveThreadMutation = useAtomCommand(threadEnvironment.archive, {
@@ -103,6 +140,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const deleteThreadMutation = useAtomCommand(threadEnvironment.delete, {
+    reportFailure: false,
+  });
+  const createThreadMutation = useAtomCommand(threadEnvironment.create, {
     reportFailure: false,
   });
   const settleThreadMutation = useAtomCommand(threadEnvironment.settle, {
@@ -527,6 +567,69 @@ export function useThreadActions() {
     [unsnoozeThreadMutation],
   );
 
+  const forkThread = useCallback(
+    async (target: ScopedThreadRef, input: { title: string; worktree: ThreadForkWorktreeMode }) => {
+      // Version skew: never send the command to a server that predates it.
+      if (!readEnvironmentSupportsThreadFork(target.environmentId)) {
+        return AsyncResult.failure(
+          Cause.fail(
+            new ThreadForkUnsupportedError({
+              environmentId: target.environmentId,
+              threadId: target.threadId,
+            }),
+          ),
+        );
+      }
+      const resolved = resolveThreadTarget(target);
+      // Re-check at dispatch time, not just at menu-open time: the source may
+      // have started a turn while the dialog was open, and the app-server
+      // rejects a fork of a thread with work in flight.
+      if (!resolved || !canForkThread(resolved.thread, readServerConfig(target.environmentId))) {
+        return AsyncResult.failure(
+          Cause.fail(
+            new ThreadForkBlockedError({
+              environmentId: target.environmentId,
+              threadId: target.threadId,
+            }),
+          ),
+        );
+      }
+      // A fork is an ordinary thread creation with a source, so the fork's own
+      // id is minted here exactly like any new thread's. The shared builder
+      // owns the rest of the payload — including the workspace fields, which
+      // the server resolves from `forkedFrom.worktree`.
+      const forkThreadId = newThreadId();
+      const createResult = await createThreadMutation({
+        environmentId: target.environmentId,
+        input: {
+          ...buildThreadForkCreateInput({
+            source: resolved.thread,
+            threadId: forkThreadId,
+            worktree: input.worktree,
+          }),
+          // The user's title wins over the inherited one: a fork that keeps its
+          // parent's title verbatim is unreadable in every list, and neither
+          // title regeneration nor the branch rename ever fires on a fork.
+          title: input.title,
+        },
+      });
+      if (createResult._tag === "Failure") {
+        return createResult;
+      }
+      // Wait for the shell, never the detail: the detail atom would download
+      // the fork's whole copied history before the route even changes.
+      await waitForThreadShell(scopeThreadRef(target.environmentId, forkThreadId));
+      const navigationResult = await settlePromise(() =>
+        router.navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(scopeThreadRef(target.environmentId, forkThreadId)),
+        }),
+      );
+      return navigationResult._tag === "Failure" ? navigationResult : createResult;
+    },
+    [createThreadMutation, resolveThreadTarget, router],
+  );
+
   const confirmAndDeleteThread = useCallback(
     async (target: ScopedThreadRef) => {
       const localApi = readLocalApi();
@@ -561,6 +664,7 @@ export function useThreadActions() {
       unarchiveThread,
       deleteThread,
       confirmAndDeleteThread,
+      forkThread,
       settleThread,
       unsettleThread,
       snoozeThread,
@@ -570,6 +674,7 @@ export function useThreadActions() {
       archiveThread,
       confirmAndDeleteThread,
       deleteThread,
+      forkThread,
       settleThread,
       snoozeThread,
       unarchiveThread,

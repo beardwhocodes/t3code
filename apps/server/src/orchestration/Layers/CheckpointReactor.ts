@@ -723,6 +723,29 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    // Restoring is a whole-directory operation — `git restore --worktree --staged -- .`
+    // followed by `git clean -fd -- .` — with no path filter, and it rolls back only
+    // the reverting thread's own provider conversation. On a worktree shared with
+    // another live thread (which forking makes a one-click choice) that would delete
+    // the sibling's uncommitted edits and untracked files without warning, and leave
+    // its agent describing a filesystem that no longer exists. Refuse instead.
+    const shell = yield* projectionSnapshotQuery.getShellSnapshot();
+    const sharingThread = shell.threads.find(
+      (other) =>
+        other.id !== event.payload.threadId &&
+        other.worktreePath !== null &&
+        other.worktreePath === thread.worktreePath,
+    );
+    if (sharingThread) {
+      yield* appendRevertFailureActivity({
+        threadId: event.payload.threadId,
+        turnCount: event.payload.turnCount,
+        detail: `This workspace is shared with thread "${sharingThread.title}". Reverting would discard that thread's uncommitted work, so it is not allowed here.`,
+        createdAt: now,
+      }).pipe(Effect.catch(() => Effect.void));
+      return;
+    }
+
     const currentTurnCount = thread.checkpoints.reduce(
       (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
       0,

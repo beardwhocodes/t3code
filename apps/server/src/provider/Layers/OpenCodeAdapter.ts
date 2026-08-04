@@ -1235,6 +1235,38 @@ export function makeOpenCodeAdapter(
               // a confirmed not-found (start fresh); transport/auth/server
               // errors propagate instead of masking as a new empty session.
               const resolved = yield* Effect.gen(function* () {
+                // Fork: seed this thread from another thread's session. Applies
+                // only when this thread has no cursor of its own — otherwise it
+                // has already been materialized and re-forking would discard its
+                // work. `messageID` is EXCLUSIVE upstream, so the tip fork omits
+                // it entirely; passing the tip's own id would drop the last turn.
+                const forkSourceSessionId =
+                  resumeSessionId === undefined
+                    ? parseOpenCodeResume(input.forkFrom?.resumeCursor)?.sessionId
+                    : undefined;
+                if (forkSourceSessionId !== undefined) {
+                  const forkedSession = yield* runOpenCodeSdk("session.fork", () =>
+                    client.session.fork({ sessionID: forkSourceSessionId, directory }),
+                  );
+                  const forked = forkedSession.data;
+                  if (!forked) {
+                    return yield* new OpenCodeRuntimeError({
+                      operation: "session.fork",
+                      detail: "OpenCode session.fork returned no session payload.",
+                    });
+                  }
+                  // session.fork copies messages but not the permission ruleset,
+                  // so the fork would otherwise sit on OpenCode's defaults rather
+                  // than this thread's runtime mode.
+                  yield* runOpenCodeSdk("session.update", () =>
+                    client.session.update({
+                      sessionID: forked.id,
+                      permission: buildOpenCodePermissionRules(input.runtimeMode),
+                    }),
+                  );
+                  return { openCodeSession: forked, created: true };
+                }
+
                 const adopted = resumeSessionId
                   ? yield* runOpenCodeSdk("session.get", () =>
                       client.session.get({ sessionID: resumeSessionId }),
@@ -1701,6 +1733,7 @@ export function makeOpenCodeAdapter(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
+        threadFork: "provider-session",
       },
       startSession,
       sendTurn,

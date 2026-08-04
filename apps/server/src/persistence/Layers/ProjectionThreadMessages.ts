@@ -8,7 +8,9 @@ import * as Struct from "effect/Struct";
 import { ChatAttachment } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
+import { FORK_ROW_ID_PREFIX } from "../forkRowIds.ts";
 import {
+  CopyProjectionThreadMessagesInput,
   GetProjectionThreadMessageInput,
   ProjectionThreadMessageRepository,
   type ProjectionThreadMessageRepositoryShape,
@@ -146,6 +148,41 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       `,
   });
 
+  const copyProjectionThreadMessageRows = SqlSchema.void({
+    Request: CopyProjectionThreadMessagesInput,
+    execute: ({ sourceThreadId, targetThreadId }) =>
+      sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        SELECT
+          ${`${FORK_ROW_ID_PREFIX}:${targetThreadId}:`} || message_id,
+          ${targetThreadId},
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          -- A fork never inherits an in-flight stream. The source may be mid-delta
+          -- when the fork is taken; the copied row is history, not a live message.
+          0,
+          created_at,
+          updated_at
+        FROM projection_thread_messages
+        WHERE thread_id = ${sourceThreadId}
+          AND NOT EXISTS (
+            SELECT 1 FROM projection_thread_messages WHERE thread_id = ${targetThreadId}
+          )
+      `,
+  });
+
   const upsert: ProjectionThreadMessageRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadMessageRow(row).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadMessageRepository.upsert:query")),
@@ -174,11 +211,19 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       ),
     );
 
+  const copyThreadHistory: ProjectionThreadMessageRepositoryShape["copyThreadHistory"] = (input) =>
+    copyProjectionThreadMessageRows(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadMessageRepository.copyThreadHistory:query"),
+      ),
+    );
+
   return {
     upsert,
     getByMessageId,
     listByThreadId,
     deleteByThreadId,
+    copyThreadHistory,
   } satisfies ProjectionThreadMessageRepositoryShape;
 });
 

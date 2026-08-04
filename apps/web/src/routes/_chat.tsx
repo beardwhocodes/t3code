@@ -1,8 +1,13 @@
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { isCommandPaletteOpen } from "../commandPaletteBus";
+import { ForkThreadDialog } from "../components/ForkThreadDialog";
+import { onRequestThreadFork, requestThreadFork } from "../forkThreadBus";
+import { readCanForkThread } from "../state/entities";
 import { useClientSettings, useSidebarV2Enabled } from "../hooks/useSettings";
 import { openCommandPalette } from "../commandPaletteBus";
 import { useProjects } from "../state/entities";
@@ -108,6 +113,17 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
+      if (command === "thread.fork") {
+        event.preventDefault();
+        event.stopPropagation();
+        // Same rule the menus use, so the shortcut is silent exactly where the
+        // action is hidden instead of raising a dialog that can only fail.
+        if (routeThreadRef && readCanForkThread(routeThreadRef)) {
+          requestThreadFork(routeThreadRef);
+        }
+        return;
+      }
+
       if (command === "preview.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -174,10 +190,37 @@ function ChatRouteGlobalShortcuts() {
   return null;
 }
 
+/**
+ * Single owner of the fork dialog. It lives on the chat route, not in ChatView,
+ * because every fork entry point resolves outside React — the context menus are
+ * native, and the command palette closes on run — and because ChatView unmounts
+ * its whole subtree when no thread is open, while the sidebar it forks from
+ * does not.
+ */
+function ForkThreadDialogHost() {
+  const [forkTarget, setForkTarget] = useState<ScopedThreadRef | null>(null);
+  const closeForkDialog = useCallback((open: boolean) => {
+    if (!open) setForkTarget(null);
+  }, []);
+  useEffect(() => onRequestThreadFork((detail) => setForkTarget(detail.threadRef)), []);
+
+  if (forkTarget === null) {
+    return null;
+  }
+  return (
+    <ForkThreadDialog
+      key={scopedThreadKey(forkTarget)}
+      threadRef={forkTarget}
+      onOpenChange={closeForkDialog}
+    />
+  );
+}
+
 function ChatRouteLayout() {
   return (
     <>
       <ChatRouteGlobalShortcuts />
+      <ForkThreadDialogHost />
       <Outlet />
     </>
   );

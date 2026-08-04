@@ -88,6 +88,41 @@ A turn is complete when its session leaves `running` status, projected by
 `settledTurnStateForSessionStatus` in [`projector.ts`][projector]. Checkpoint work settling later
 does not define turn end.
 
+## Thread forks
+
+A fork is a `thread.create` command carrying an optional `forkedFrom` (source `threadId`, worktree
+mode, and the source's tip turn), not a command or event type of its own. That is deliberate. The
+event-type union in [`orchestration.ts`][contracts] gates the decode of everything read back out of
+the event store, so a new event type is a permanent one-way door: any reader older than it fails on
+those rows forever. An optional field on an existing payload only degrades to "absent". The fork's
+own id is the command's top-level `threadId`, client-minted like any thread.
+
+[`decider.ts`][decider] validates the source against the read model — present, not deleted, not
+archived, a session attached and settled, no running turn — and emits one `thread.created` carrying
+a `ThreadForkOrigin`. The copied history is not in that payload. [`ProjectionPipeline`][pipeline]
+copies the source's message, activity, and proposed-plan rows into the fork inside the same
+transaction as the event, so a fork costs one event however long the source thread is, and the read
+model can never hold half a copy. Turn rows are excluded on purpose: `checkpoint_ref` is namespaced
+by thread id, so copied turns would point the fork at the source's refs and its first revert would
+delete the source's checkpoint history. The fork starts its checkpoint timeline at zero. Every copied row id is regenerated through
+[`forkRowIds.ts`][forkrows]: those ids are global primary keys and the repositories upsert on
+conflict, so reusing a source id would move the parent's rows onto the fork instead of colliding.
+
+The provider session is forked lazily. `thread.created` starts no process; the fork's first
+`thread.turn.start` passes `ProviderSessionForkSource` to session start, and it is consumed exactly
+once — a `resumeCursor` of the fork's own always wins, because by then the fork has produced work
+that re-forking would discard. Adapters seed the session their own way (Codex resumes the source
+rollout, Claude uses `resume` plus `forkSession`, OpenCode deep-copies with `session.fork`); see
+[providers.md](./providers.md).
+
+Two capability flags gate the action, and both are absent-means-false, unlike the older optional
+provider flags around them: `ExecutionEnvironmentCapabilities.threadFork` says this server
+understands `forkedFrom` at all, and `ServerProvider.supportsThreadFork` says this provider instance
+can seed a session. Clients read both with `=== true` and hide the action otherwise, together with
+the preconditions the decider enforces and one more the decider leaves to them: the source needs at
+least one completed turn. Codex writes its rollout when a turn completes, so forking a thread that
+never completed one is rejected by the app-server.
+
 ## Drainable workers
 
 Follow-up work runs asynchronously in queue-backed workers built on [`DrainableWorker`][worker]:
@@ -150,3 +185,5 @@ already dispatch.
 [checkpoint]: ../../apps/server/src/orchestration/Layers/CheckpointReactor.ts
 [receipts]: ../../apps/server/src/orchestration/Layers/RuntimeReceiptBus.ts
 [drivers]: ../../apps/server/src/provider/builtInDrivers.ts
+[pipeline]: ../../apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+[forkrows]: ../../apps/server/src/persistence/forkRowIds.ts

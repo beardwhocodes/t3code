@@ -105,6 +105,12 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
+  /**
+   * Seeds this session by forking another Codex thread. One-shot: consumed by
+   * the first open and never persisted, so a restart resumes the forked thread
+   * rather than forking the source again.
+   */
+  readonly forkFrom?: { readonly threadId: string; readonly lastTurnId?: string };
   readonly appServerArgs?: ReadonlyArray<string>;
 }
 
@@ -443,9 +449,10 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
 
 type CodexThreadOpenResponse =
   | CodexRpc.ClientRequestResponsesByMethod["thread/start"]
-  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"];
+  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"]
+  | CodexRpc.ClientRequestResponsesByMethod["thread/fork"];
 
-type CodexThreadOpenMethod = "thread/start" | "thread/resume";
+type CodexThreadOpenMethod = "thread/start" | "thread/resume" | "thread/fork";
 
 interface CodexThreadOpenClient {
   readonly request: <M extends CodexThreadOpenMethod>(
@@ -462,6 +469,7 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly forkFrom: { readonly threadId: string; readonly lastTurnId?: string } | undefined;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -470,6 +478,28 @@ export const openCodexThread = (input: {
     model: input.requestedModel,
     serviceTier: input.serviceTier,
   });
+
+  // A fork loads the SOURCE thread's rollout from disk and copies it into a new
+  // one, leaving the source file untouched, so the parent thread keeps working.
+  // `lastTurnId` pins the copy to the tip as it stood when the user forked, so a
+  // parent that keeps working before the fork's first turn does not leak later
+  // turns into the fork's memory.
+  //
+  // Deliberately NOT wrapped in the recoverable-resume fallback below: that
+  // fallback turns a failed open into a fresh empty thread, which for a fork
+  // would mean silently producing a thread that shows a full conversation the
+  // agent has no memory of. A visible error is the better failure.
+  if (input.forkFrom !== undefined) {
+    // `ephemeral` is deliberately dropped rather than forwarded: fork params
+    // type it as non-nullable, and an ephemeral fork stays pathless — no rollout
+    // on disk — so the forked thread could never be resumed after a restart.
+    const { ephemeral: _ephemeral, ...forkableStartParams } = startParams;
+    return input.client.request("thread/fork", {
+      threadId: input.forkFrom.threadId,
+      ...(input.forkFrom.lastTurnId !== undefined ? { lastTurnId: input.forkFrom.lastTurnId } : {}),
+      ...forkableStartParams,
+    });
+  }
 
   if (resumeThreadId === undefined) {
     return input.client.request("thread/start", startParams);
@@ -1227,6 +1257,7 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        forkFrom: options.forkFrom,
       });
 
       const providerThreadId = opened.thread.id;

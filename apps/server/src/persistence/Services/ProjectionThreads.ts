@@ -43,6 +43,10 @@ export const ProjectionThread = Schema.Struct({
   snoozedAt: Schema.NullOr(IsoDateTime),
   titleRegenerationRequestId: Schema.optional(Schema.NullOr(CommandId)),
   titleRegenerationStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  // Fork lineage. Optional so rows written before migration 036 still decode.
+  forkedFromThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  forkedFromTipTurnId: Schema.optional(Schema.NullOr(TurnId)),
+  forkedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,
@@ -55,6 +59,11 @@ export const GetProjectionThreadInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type GetProjectionThreadInput = typeof GetProjectionThreadInput.Type;
+
+export const ListForkThreadIdsInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ListForkThreadIdsInput = typeof ListForkThreadIdsInput.Type;
 
 export const DeleteProjectionThreadInput = Schema.Struct({
   threadId: ThreadId,
@@ -99,6 +108,17 @@ export interface ProjectionThreadRepositoryShape {
   readonly deleteById: (
     input: DeleteProjectionThreadInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * List the ids of threads forked from this one, newest first.
+   *
+   * Backed by `idx_projection_threads_forked_from`. Includes deleted and archived
+   * forks: callers use this to decide whether shared data (attachment files) is
+   * still referenced, and a soft-deleted fork's rows still name it.
+   */
+  readonly listForkThreadIds: (
+    input: ListForkThreadIdsInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionRepositoryError>;
 }
 
 /**

@@ -29,6 +29,27 @@ describe("ServerProvider", () => {
     expect(parsed.updateState).toBeUndefined();
   });
 
+  it("never reports thread-fork support for a snapshot that omits the flag", () => {
+    // A server older than the fork feature sends no flag at all. Clients must
+    // read this as "cannot fork" and hide the action: the neighbouring optional
+    // provider flags default to permissive, and copying that polarity here would
+    // offer an action the server cannot honour. The gate is `=== true`.
+    const parsed = decodeServerProvider({
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      models: [],
+    });
+
+    expect(parsed.supportsThreadFork).toBeUndefined();
+    expect(parsed.supportsThreadFork === true).toBe(false);
+  });
+
   it("defaults one-click update support when decoding older advisory snapshots", () => {
     const parsed = decodeServerProvider({
       instanceId: "codex",

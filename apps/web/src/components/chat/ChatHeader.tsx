@@ -9,6 +9,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
+import { ThreadActionsMenu } from "./ThreadActionsMenu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, {
   type NewProjectScriptInput,
@@ -34,6 +35,10 @@ interface ChatHeaderProps {
   availableEditors: ReadonlyArray<EditorId>;
   rightPanelOpen: boolean;
   gitCwd: string | null;
+  /** False under version skew or on a provider instance that cannot seed a
+      session from an existing one. */
+  canForkThread: boolean;
+  onForkThread: () => void;
   onNewThreadInProject: () => void;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
@@ -70,6 +75,8 @@ export const ChatHeader = memo(function ChatHeader({
   availableEditors,
   rightPanelOpen,
   gitCwd,
+  canForkThread,
+  onForkThread,
   onNewThreadInProject,
   onRunProjectScript,
   onAddProjectScript,
@@ -167,6 +174,15 @@ export const ChatHeader = memo(function ChatHeader({
             {...(draftId ? { draftId } : {})}
           />
         )}
+        {/* Thread actions live in their own component so ChatView does not have
+            to subscribe to every thread shell just to count this one's forks. */}
+        <ThreadActionsMenu
+          environmentId={activeThreadEnvironmentId}
+          threadId={activeThreadId}
+          canFork={canForkThread}
+          keybindings={keybindings}
+          onFork={onForkThread}
+        />
       </div>
     </div>
   );

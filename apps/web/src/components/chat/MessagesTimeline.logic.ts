@@ -7,7 +7,12 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
+import {
+  type MessageId,
+  type OrchestrationLatestTurn,
+  type ThreadId,
+  type TurnId,
+} from "@t3tools/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
@@ -175,7 +180,18 @@ export type MessagesTimelineRow =
       createdAt: string;
       proposedPlan: ProposedPlan;
     }
-  | { kind: "working"; id: string; createdAt: string | null };
+  | { kind: "working"; id: string; createdAt: string | null }
+  /**
+   * Marks where inherited history ends and this thread's own work begins.
+   * Rendered only on a fork, and only once.
+   */
+  | {
+      kind: "fork-origin";
+      id: string;
+      createdAt: string;
+      parentThreadId: ThreadId;
+      parentTitle: string | null;
+    };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -412,6 +428,16 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  /**
+   * Set on a forked thread. `forkedAt` is the fork thread's own creation time:
+   * copied rows keep the SOURCE's timestamps, which are all older than it, so
+   * the first entry at or after it is the first thing this thread did itself.
+   */
+  forkOrigin?: {
+    readonly parentThreadId: ThreadId;
+    readonly parentTitle: string | null;
+    readonly forkedAt: string;
+  } | null;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const durationStartByMessageId = computeMessageDurationStart(
@@ -437,10 +463,30 @@ export function deriveMessagesTimelineRows(input: {
     }
   }
 
+  const forkOrigin = input.forkOrigin ?? null;
+  let forkOriginEmitted = forkOrigin === null;
+
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
     if (!timelineEntry) {
       continue;
+    }
+
+    // The divider goes immediately before the first entry this thread produced
+    // itself, so everything above it is visibly inherited.
+    if (
+      forkOrigin !== null &&
+      !forkOriginEmitted &&
+      timelineEntry.createdAt >= forkOrigin.forkedAt
+    ) {
+      nextRows.push({
+        kind: "fork-origin",
+        id: "fork-origin",
+        createdAt: forkOrigin.forkedAt,
+        parentThreadId: forkOrigin.parentThreadId,
+        parentTitle: forkOrigin.parentTitle,
+      });
+      forkOriginEmitted = true;
     }
 
     const turnFold = foldsByAnchorEntryId.get(timelineEntry.id);
@@ -571,6 +617,18 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
+  // A fork with no work of its own yet: the whole transcript is inherited, so
+  // the divider closes it rather than splitting it.
+  if (forkOrigin !== null && !forkOriginEmitted) {
+    nextRows.push({
+      kind: "fork-origin",
+      id: "fork-origin",
+      createdAt: forkOrigin.forkedAt,
+      parentThreadId: forkOrigin.parentThreadId,
+      parentTitle: forkOrigin.parentTitle,
+    });
+  }
+
   return nextRows;
 }
 
@@ -601,6 +659,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   switch (a.kind) {
     case "working":
       return a.createdAt === (b as typeof a).createdAt;
+
+    case "fork-origin": {
+      const bf = b as typeof a;
+      return a.parentThreadId === bf.parentThreadId && a.parentTitle === bf.parentTitle;
+    }
 
     case "turn-fold": {
       const bf = b as typeof a;

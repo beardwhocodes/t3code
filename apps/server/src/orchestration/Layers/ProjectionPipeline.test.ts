@@ -2462,6 +2462,188 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       ]);
     }),
   );
+
+  it.effect("copies a forked thread's history without stealing the source's rows", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const base = {
+        aggregateKind: "thread",
+        occurredAt: now,
+        causationEventId: null,
+        metadata: {},
+      } as const;
+
+      yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.make("fork-evt-project"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("fork-project"),
+        occurredAt: now,
+        commandId: CommandId.make("fork-cmd-project"),
+        causationEventId: null,
+        correlationId: CommandId.make("fork-cmd-project"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("fork-project"),
+          title: "Fork project",
+          workspaceRoot: "/tmp/fork-project",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        ...base,
+        type: "thread.created",
+        eventId: EventId.make("fork-evt-source"),
+        aggregateId: ThreadId.make("fork-source"),
+        commandId: CommandId.make("fork-cmd-source"),
+        correlationId: CommandId.make("fork-cmd-source"),
+        payload: {
+          threadId: ThreadId.make("fork-source"),
+          projectId: ProjectId.make("fork-project"),
+          title: "Source",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        ...base,
+        type: "thread.message-sent",
+        eventId: EventId.make("fork-evt-message"),
+        aggregateId: ThreadId.make("fork-source"),
+        commandId: CommandId.make("fork-cmd-message"),
+        correlationId: CommandId.make("fork-cmd-message"),
+        payload: {
+          threadId: ThreadId.make("fork-source"),
+          messageId: MessageId.make("message-forked"),
+          role: "assistant",
+          text: "inherited",
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      // An unresolved user-input request on the source. Its request id belongs to
+      // the source's provider session, so nothing can ever resolve it for a fork.
+      yield* eventStore.append({
+        ...base,
+        type: "thread.activity-appended",
+        eventId: EventId.make("fork-evt-activity"),
+        aggregateId: ThreadId.make("fork-source"),
+        commandId: CommandId.make("fork-cmd-activity"),
+        correlationId: CommandId.make("fork-cmd-activity"),
+        payload: {
+          threadId: ThreadId.make("fork-source"),
+          activity: {
+            id: EventId.make("fork-evt-activity"),
+            tone: "info",
+            kind: "user-input.requested",
+            summary: "Agent asked a question",
+            payload: { requestId: "request-1" },
+            turnId: null,
+            createdAt: now,
+          },
+        },
+      });
+
+      yield* eventStore.append({
+        ...base,
+        type: "thread.created",
+        eventId: EventId.make("fork-evt-fork"),
+        aggregateId: ThreadId.make("fork-child"),
+        commandId: CommandId.make("fork-cmd-fork"),
+        correlationId: CommandId.make("fork-cmd-fork"),
+        payload: {
+          threadId: ThreadId.make("fork-child"),
+          projectId: ProjectId.make("fork-project"),
+          title: "Source (fork)",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          forkedFrom: { threadId: ThreadId.make("fork-source") },
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      // THE assertion that matters. message_id is a GLOBAL primary key and the
+      // repository upserts with `ON CONFLICT DO UPDATE SET thread_id = excluded.thread_id`,
+      // so a copy that reused the source's id would MOVE this row onto the fork
+      // and silently empty the source's transcript. Asserting only that the fork
+      // has rows would not catch it.
+      const ownerRows = yield* sql<{ readonly threadId: string }>`
+        SELECT thread_id AS "threadId"
+        FROM projection_thread_messages
+        WHERE message_id = 'message-forked'
+      `;
+      assert.deepEqual(ownerRows, [{ threadId: "fork-source" }]);
+
+      const copiedRows = yield* sql<{
+        readonly messageId: string;
+        readonly text: string;
+      }>`
+        SELECT message_id AS "messageId", text
+        FROM projection_thread_messages
+        WHERE thread_id = 'fork-child'
+      `;
+      assert.equal(copiedRows.length, 1);
+      assert.equal(copiedRows[0]?.text, "inherited");
+      assert.notEqual(copiedRows[0]?.messageId, "message-forked");
+
+      const copiedActivities = yield* sql<{ readonly activityId: string }>`
+        SELECT activity_id AS "activityId"
+        FROM projection_thread_activities
+        WHERE thread_id = 'fork-child'
+      `;
+      assert.equal(copiedActivities.length, 1);
+      assert.notEqual(copiedActivities[0]?.activityId, "fork-evt-activity");
+
+      // The fork must NOT inherit the source's open request as a pending badge:
+      // the count is derived from the copied activities, so it has to be forced
+      // to zero rather than recomputed.
+      const forkRow = yield* sql<{
+        readonly forkedFromThreadId: string | null;
+        readonly pendingUserInputCount: number;
+        readonly latestTurnId: string | null;
+      }>`
+        SELECT
+          forked_from_thread_id AS "forkedFromThreadId",
+          pending_user_input_count AS "pendingUserInputCount",
+          latest_turn_id AS "latestTurnId"
+        FROM projection_threads
+        WHERE thread_id = 'fork-child'
+      `;
+      assert.deepEqual(forkRow, [
+        {
+          forkedFromThreadId: "fork-source",
+          pendingUserInputCount: 0,
+          latestTurnId: null,
+        },
+      ]);
+    }),
+  );
 });
 
 it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-"))(

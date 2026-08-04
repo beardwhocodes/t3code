@@ -31,6 +31,7 @@ import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
 import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
+import { ForkThreadSheet } from "./features/threads/ForkThreadSheet";
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
@@ -261,6 +262,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "ConnectOnboarding",
   "Connections",
   "ConnectionsNew",
+  "ForkThread",
   "GitBranches",
   "GitCommit",
   "GitConfirm",
@@ -469,6 +471,15 @@ export const RootStack = createNativeStackNavigator({
     GitConfirm: createNativeStackScreen({
       screen: GitConfirmSheet,
       linking: `${THREAD_LINKING_PREFIX}/git-confirm`,
+      options: {
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.45, 0.7],
+        sheetGrabberVisible: true,
+      },
+    }),
+    ForkThread: createNativeStackScreen({
+      screen: ForkThreadSheet,
+      linking: `${THREAD_LINKING_PREFIX}/fork`,
       options: {
         presentation: "formSheet",
         sheetAllowedDetents: [0.45, 0.7],

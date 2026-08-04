@@ -357,6 +357,10 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
   const serverConfig = yield* Effect.service(ServerConfig);
   const fileSystem = yield* Effect.service(FileSystem.FileSystem);
   const path = yield* Effect.service(Path.Path);
+  const projectionThreadRepository = yield* Effect.service(ProjectionThreadRepository);
+  const projectionThreadMessageRepository = yield* Effect.service(
+    ProjectionThreadMessageRepository,
+  );
 
   const attachmentsRootDir = serverConfig.attachmentsDir;
   const readAttachmentRootEntries = fileSystem
@@ -364,13 +368,16 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     .pipe(Effect.orElseSucceed(() => [] as Array<string>));
 
   const removeDeletedThreadAttachmentEntry = Effect.fn("removeDeletedThreadAttachmentEntry")(
-    function* (threadSegment: string, entry: string) {
+    function* (threadSegment: string, keepAttachmentIds: ReadonlySet<string>, entry: string) {
       const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
       if (normalizedEntry.length === 0 || normalizedEntry.includes("/")) {
         return;
       }
       const attachmentId = parseAttachmentIdFromRelativePath(normalizedEntry);
       if (!attachmentId) {
+        return;
+      }
+      if (keepAttachmentIds.has(attachmentId)) {
         return;
       }
       const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachmentId);
@@ -394,10 +401,31 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
       return;
     }
 
+    // Attachment ids embed the id of the thread that UPLOADED them, and a fork
+    // copies message rows with their `attachments_json` verbatim. So a thread's
+    // files can still be rendered by its forks after it is deleted. Deleting by
+    // segment alone would blank out those images with no error anywhere, on
+    // threads the user never touched. Keep anything another live thread still
+    // references.
+    const forkThreadIds = yield* projectionThreadRepository.listForkThreadIds({
+      threadId: ThreadId.make(threadId),
+    });
+    const referencedElsewhere = new Set<string>();
+    for (const forkThreadId of forkThreadIds) {
+      const messages = yield* projectionThreadMessageRepository.listByThreadId({
+        threadId: forkThreadId,
+      });
+      for (const message of messages) {
+        for (const attachment of message.attachments ?? []) {
+          referencedElsewhere.add(attachment.id);
+        }
+      }
+    }
+
     const entries = yield* readAttachmentRootEntries;
     yield* Effect.forEach(
       entries,
-      (entry) => removeDeletedThreadAttachmentEntry(threadSegment, entry),
+      (entry) => removeDeletedThreadAttachmentEntry(threadSegment, referencedElsewhere, entry),
       {
         concurrency: 1,
       },
@@ -593,7 +621,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadsProjection",
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
-        case "thread.created":
+        case "thread.created": {
+          const forkedFrom = event.payload.forkedFrom;
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
@@ -603,6 +632,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            // Null even on a fork: no turn rows are copied, so a latestTurnId
+            // inherited from the source would point at a turn this thread does
+            // not have.
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -613,13 +645,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             snoozedAt: null,
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
+            ...(forkedFrom
+              ? {
+                  forkedFromThreadId: forkedFrom.threadId,
+                  forkedFromTipTurnId: forkedFrom.tipTurnId ?? null,
+                  forkedAt: event.payload.createdAt,
+                }
+              : {}),
             latestUserMessageAt: null,
+            // Deliberately NOT derived by refreshThreadShellSummary for a fork.
+            // That helper counts open user-input requests off the ACTIVITIES it
+            // finds, and the copied activities still carry the source's
+            // `user-input.requested` entries whose request ids only the SOURCE's
+            // session can resolve. Deriving them would pin a phantom "Awaiting
+            // Input" badge on the fork forever, in every list surface, and mobile
+            // would refuse to snooze it. The fork starts clear; its own turns
+            // populate these normally from here on.
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
             deletedAt: null,
           });
           return;
+        }
 
         case "thread.archived": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -889,6 +937,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadMessagesProjection",
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
+        // A fork copies the source thread's history into its own rows, in one
+        // set-based statement per table, inside the same transaction as the
+        // event. Emitting one event per copied row instead would be quadratic:
+        // refreshThreadShellSummary re-reads every message and activity of the
+        // thread on each one, on a single command worker and a single
+        // synchronous SQLite connection — and the ~2000-event jump would push
+        // every briefly-disconnected client past the resume gap, forcing a full
+        // snapshot reset on all of their other devices.
+        case "thread.created": {
+          if (!event.payload.forkedFrom) return;
+          yield* projectionThreadMessageRepository.copyThreadHistory({
+            sourceThreadId: event.payload.forkedFrom.threadId,
+            targetThreadId: event.payload.threadId,
+          });
+          return;
+        }
+
         case "thread.message-sent": {
           const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
             messageId: event.payload.messageId,
@@ -968,6 +1033,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadProposedPlansProjection",
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
+        // A fork copies the source thread's history into its own rows, in one
+        // set-based statement per table, inside the same transaction as the
+        // event. Emitting one event per copied row instead would be quadratic:
+        // refreshThreadShellSummary re-reads every message and activity of the
+        // thread on each one, on a single command worker and a single
+        // synchronous SQLite connection — and the ~2000-event jump would push
+        // every briefly-disconnected client past the resume gap, forcing a full
+        // snapshot reset on all of their other devices.
+        case "thread.created": {
+          if (!event.payload.forkedFrom) return;
+          yield* projectionThreadProposedPlanRepository.copyThreadHistory({
+            sourceThreadId: event.payload.forkedFrom.threadId,
+            targetThreadId: event.payload.threadId,
+          });
+          return;
+        }
+
         case "thread.proposed-plan-upserted":
           yield* projectionThreadProposedPlanRepository.upsert({
             planId: event.payload.proposedPlan.id,
@@ -1019,6 +1101,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadActivitiesProjection",
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
+        // A fork copies the source thread's history into its own rows, in one
+        // set-based statement per table, inside the same transaction as the
+        // event. Emitting one event per copied row instead would be quadratic:
+        // refreshThreadShellSummary re-reads every message and activity of the
+        // thread on each one, on a single command worker and a single
+        // synchronous SQLite connection — and the ~2000-event jump would push
+        // every briefly-disconnected client past the resume gap, forcing a full
+        // snapshot reset on all of their other devices.
+        case "thread.created": {
+          if (!event.payload.forkedFrom) return;
+          yield* projectionThreadActivityRepository.copyThreadHistory({
+            sourceThreadId: event.payload.forkedFrom.threadId,
+            targetThreadId: event.payload.threadId,
+          });
+          return;
+        }
+
         case "thread.activity-appended":
           yield* projectionThreadActivityRepository.upsert({
             activityId: event.payload.activity.id,
@@ -1089,6 +1188,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadTurnsProjection",
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
+        // A fork copies the source thread's history into its own rows, in one
+        // set-based statement per table, inside the same transaction as the
+        // event. Emitting one event per copied row instead would be quadratic:
+        // refreshThreadShellSummary re-reads every message and activity of the
+        // thread on each one, on a single command worker and a single
+        // synchronous SQLite connection — and the ~2000-event jump would push
+        // every briefly-disconnected client past the resume gap, forcing a full
+        // snapshot reset on all of their other devices.
+        case "thread.created":
+          // A fork deliberately copies NO turn rows and starts its own checkpoint
+          // timeline at zero.
+          //
+          // Turn rows carry `checkpoint_ref`, and refs are namespaced per thread
+          // (refs/t3/checkpoints/<base64url(threadId)>/turn/<n>). Copied rows would
+          // hand the fork the PARENT's refs, and revert deletes every ref above its
+          // target off the read model — so the fork's first revert would destroy the
+          // parent's checkpoint history, silently. Re-namespacing the refs would fix
+          // that but needs a new VCS operation and still leaves revert-to-turn-0 and
+          // full-thread diff computing a fork-owned turn-0 ref that never existed.
+          //
+          // The cost is that the fork cannot show file diffs for turns it inherited.
+          // Those diffs remain visible on the parent, which still owns them.
+          return;
+
         case "thread.turn-start-requested": {
           yield* projectionTurnRepository.replacePendingTurnStart({
             threadId: event.payload.threadId,
@@ -1641,6 +1764,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ServerConfig, serverConfig),
+        Effect.provideService(ProjectionThreadRepository, projectionThreadRepository),
+        Effect.provideService(ProjectionThreadMessageRepository, projectionThreadMessageRepository),
+        Effect.provideService(ProjectionThreadRepository, projectionThreadRepository),
+        Effect.provideService(ProjectionThreadMessageRepository, projectionThreadMessageRepository),
         Effect.asVoid,
         Effect.catchTag("SqlError", (sqlError) =>
           Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
@@ -1655,6 +1782,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
+      Effect.provideService(ProjectionThreadRepository, projectionThreadRepository),
+      Effect.provideService(ProjectionThreadMessageRepository, projectionThreadMessageRepository),
       Effect.asVoid,
       Effect.tap(() =>
         Effect.logDebug("orchestration projection pipeline bootstrapped").pipe(

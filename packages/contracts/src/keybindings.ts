@@ -68,6 +68,9 @@ const STATIC_KEYBINDING_COMMANDS = [
   "composer.stash",
   "chat.new",
   "chat.newLocal",
+  // Not part of THREAD_KEYBINDING_COMMANDS: those are the jump/traversal set
+  // the sidebars enumerate, and a fork is an action on the open thread.
+  "thread.fork",
   "editor.openFavorite",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
   ...THREAD_KEYBINDING_COMMANDS,

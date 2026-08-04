@@ -1,7 +1,8 @@
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
 import { useNavigation } from "@react-navigation/native";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getCompactBrandHeaderOptions } from "../../components/CompactBrandTitle";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
@@ -44,6 +45,17 @@ export function HomeRouteScreen() {
     unsnoozeThread,
     unsettleThread,
   } = useThreadListActions();
+  // The row hands off to the sheet, which asks the worktree question and then
+  // dispatches the fork itself.
+  const openForkSheet = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      navigation.navigate("ForkThread", {
+        environmentId: String(thread.environmentId),
+        threadId: String(thread.id),
+      });
+    },
+    [navigation],
+  );
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
   const environments = useMemo(() => {
@@ -151,6 +163,7 @@ export function HomeRouteScreen() {
           }
           onArchiveThread={archiveThread}
           onDeleteThread={confirmDeleteThread}
+          onForkThread={openForkSheet}
           onSettleThread={settleThread}
           onSnoozeThread={snoozeThread}
           onUnsnoozeThread={unsnoozeThread}

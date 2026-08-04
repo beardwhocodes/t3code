@@ -259,6 +259,22 @@ const SourceProposedPlanReference = Schema.Struct({
   planId: OrchestrationProposedPlanId,
 });
 
+/**
+ * Lineage carried by a forked thread. Deliberately small: the copied history
+ * lives in the projection tables, not in the event payload, so one fork costs
+ * one event no matter how long the source thread is.
+ *
+ * `tipTurnId` is the source thread's latest completed turn at fork time. Adapters
+ * that can pin a fork point use it (Codex `lastTurnId`, OpenCode's exclusive
+ * `messageID`) so the copied transcript and the agent's memory agree even when
+ * the parent keeps working before the fork's first turn.
+ */
+export const ThreadForkOrigin = Schema.Struct({
+  threadId: ThreadId,
+  tipTurnId: Schema.optional(TurnId),
+});
+export type ThreadForkOrigin = typeof ThreadForkOrigin.Type;
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -376,6 +392,9 @@ export const OrchestrationThread = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   // Pending-only state. Optional so older servers remain compatible.
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  // Lineage. Set once at fork time and never cleared, so the child can always
+  // link back even after the parent is archived or deleted.
+  forkedFrom: Schema.optional(Schema.NullOr(ThreadForkOrigin)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -429,6 +448,11 @@ export const OrchestrationThreadShell = Schema.Struct({
   snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  // Lineage rides the SHELL, not just the detail: the sidebars, the mobile lists
+  // and the command palette all render from the shell and never load detail, and
+  // a fork sharing its parent's worktree is otherwise indistinguishable from it
+  // in every list (same title, branch, project, model).
+  forkedFrom: Schema.optional(Schema.NullOr(ThreadForkOrigin)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -551,6 +575,26 @@ const ProjectDeleteCommand = Schema.Struct({
   force: Schema.optional(Schema.Boolean),
 });
 
+/**
+ * Where a forked thread takes its workspace from. "new" gives the fork its own
+ * worktree seeded from the parent's working state; "shared" points the fork at
+ * the parent's worktree (or, when the parent has none, at the project root).
+ */
+export const ThreadForkWorktreeMode = Schema.Literals(["new", "shared"]);
+export type ThreadForkWorktreeMode = typeof ThreadForkWorktreeMode.Type;
+
+/**
+ * Fork intent on thread.create. A fork is a thread creation with a source, so it
+ * rides the existing command rather than adding a parallel one. `tipTurnId` is
+ * the source thread's latest completed turn at fork time; adapters that can pin a
+ * fork point use it so the copied transcript and the agent's memory agree.
+ */
+const ThreadCreateForkSource = Schema.Struct({
+  threadId: ThreadId,
+  worktree: ThreadForkWorktreeMode,
+  tipTurnId: Schema.optional(TurnId),
+});
+
 const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
@@ -564,6 +608,9 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  // Absent on every non-fork creation, which is every creation older clients
+  // send. Present only when this thread is a fork of `forkedFrom.threadId`.
+  forkedFrom: Schema.optional(ThreadCreateForkSource),
   createdAt: IsoDateTime,
 });
 
@@ -974,6 +1021,10 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  // Present only on a fork. An older server that replays this event ignores the
+  // field and materializes an ordinary empty thread, which is why the fork rides
+  // thread.created instead of a new event type the old decoder would reject.
+  forkedFrom: Schema.optional(ThreadForkOrigin),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

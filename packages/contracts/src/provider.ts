@@ -50,6 +50,29 @@ export const ProviderSession = Schema.Struct({
 });
 export type ProviderSession = typeof ProviderSession.Type;
 
+/**
+ * Seeds a brand-new provider session from an existing thread's conversation.
+ *
+ * Consumed exactly once, by the fork thread's FIRST session start. `resumeCursor`
+ * on the same input always wins: once the fork owns a cursor of its own, the fork
+ * is already materialized and re-forking would silently discard everything it has
+ * produced since. Whether the adapter forks eagerly here or defers to the provider
+ * (Codex forks inside `thread/start`, Claude via `resume` + `forkSession`) is the
+ * adapter's business.
+ */
+export const ProviderSessionForkSource = Schema.Struct({
+  threadId: ThreadId,
+  // The source thread's tip turn at fork time, for adapters that can pin a
+  // fork point. Absent means "fork at whatever the source's tip is now".
+  tipTurnId: Schema.optional(TurnId),
+  // The source's provider-opaque cursor, naming the conversation to fork.
+  // Callers leave this out: `ProviderService` fills it in from the source
+  // thread's persisted session binding, which it owns, before handing the
+  // input to an adapter. An adapter always receives it populated.
+  resumeCursor: Schema.optional(Schema.Unknown),
+});
+export type ProviderSessionForkSource = typeof ProviderSessionForkSource.Type;
+
 export const ProviderSessionStartInput = Schema.Struct({
   threadId: ThreadId,
   provider: Schema.optional(ProviderDriverKind),
@@ -58,6 +81,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
+  forkFrom: Schema.optional(ProviderSessionForkSource),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

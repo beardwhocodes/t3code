@@ -25,11 +25,26 @@ import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 
+/**
+ * How this provider can seed a new session from an existing one.
+ *
+ * "provider-session" means the adapter honours `ProviderSessionStartInput.forkFrom`
+ * and the forked session carries the source's conversation as agent memory.
+ * "unsupported" means the client hides the fork action for this provider entirely.
+ */
+export type ProviderThreadForkMode = "provider-session" | "unsupported";
+
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  /**
+   * Declares whether a new session can be seeded from an existing thread's
+   * conversation. Required, not optional: `satisfies` on each adapter's
+   * capability literal then forces a per-provider decision at typecheck.
+   */
+  readonly threadFork: ProviderThreadForkMode;
 }
 
 export interface ProviderThreadTurnSnapshot {

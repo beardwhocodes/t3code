@@ -171,6 +171,13 @@ export const ServerProvider = Schema.Struct({
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
+  // Whether this provider instance can seed a new session from an existing
+  // one. Unlike the flags above, ABSENT MEANS FALSE: an older server sends
+  // nothing, and a client that showed the action anyway would dispatch a fork
+  // the server cannot honour. Read it as `=== true`, never `?? true`.
+  // For ACP-backed instances this is discovered per connection from the
+  // agent's advertised capabilities, so it can flip after a CLI upgrade.
+  supportsThreadFork: Schema.optional(Schema.Boolean),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),

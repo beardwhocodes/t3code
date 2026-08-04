@@ -122,6 +122,20 @@ interface ClaudeResumeState {
   readonly turnCount?: number;
 }
 
+/**
+ * A verified fork of a Claude session.
+ *
+ * `resume` alone is NOT a fork — it continues the parent's session id, so both
+ * threads would append to one transcript and could run two CLI processes against
+ * it at once. Only `forkSession: true` mints a new session, and supplying an
+ * explicit `sessionId` alongside it makes the new id ours rather than whatever
+ * the CLI reports first.
+ */
+interface ClaudeForkPlan {
+  readonly parentSessionId: string;
+  readonly forkSessionId: string;
+}
+
 interface ClaudeTurnState {
   readonly turnId: TurnId;
   readonly startedAt: string;
@@ -3171,7 +3185,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const resumeState = readClaudeResumeState(input.resumeCursor);
       const threadId = input.threadId;
       const existingResumeSessionId = resumeState?.resume;
+
+      // A fork applies only while this thread has no session of its own; once it
+      // does, `resumeCursor` wins and this is an ordinary resume.
+      const forkParentSessionId =
+        existingResumeSessionId === undefined
+          ? readClaudeResumeState(input.forkFrom?.resumeCursor)?.resume
+          : undefined;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
+      const forkPlan: ClaudeForkPlan | undefined =
+        forkParentSessionId !== undefined && newSessionId !== undefined
+          ? { parentSessionId: forkParentSessionId, forkSessionId: newSessionId }
+          : undefined;
       const sessionId = existingResumeSessionId ?? newSessionId;
 
       const runtimeContext = yield* Effect.context<never>();
@@ -3539,7 +3564,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ? { allowDangerouslySkipPermissions: true }
           : {}),
         ...(Object.keys(settings).length > 0 ? { settings } : {}),
-        ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
+        ...(forkPlan
+          ? { resume: forkPlan.parentSessionId, forkSession: true }
+          : existingResumeSessionId
+            ? { resume: existingResumeSessionId }
+            : {}),
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         canUseTool,
@@ -3565,8 +3594,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "provider.kind": PROVIDER,
         "provider.thread_id": threadId,
         "provider.runtime_mode": input.runtimeMode,
-        "claude.resume.source":
-          existingResumeSessionId !== undefined ? "resume-session" : "generated-session",
+        "claude.resume.source": forkPlan
+          ? "fork-session"
+          : existingResumeSessionId !== undefined
+            ? "resume-session"
+            : "generated-session",
+        "claude.resume.fork_parent_session_id": forkPlan?.parentSessionId ?? "",
         "claude.resume.thread_id": resumeState?.threadId ?? "",
         "claude.resume.session_id": existingResumeSessionId ?? "",
         "claude.resume.session_at": resumeState?.resumeSessionAt ?? "",
@@ -3613,8 +3646,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         resumeCursor: {
           ...(threadId ? { threadId } : {}),
           ...(sessionId ? { resume: sessionId } : {}),
-          ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
-          turnCount: resumeState?.turnCount ?? 0,
+          // A fork remaps every message uuid, so an assistant checkpoint
+          // inherited from the parent names a message that does not exist in it.
+          ...(!forkPlan && resumeState?.resumeSessionAt
+            ? { resumeSessionAt: resumeState.resumeSessionAt }
+            : {}),
+          turnCount: forkPlan ? 0 : (resumeState?.turnCount ?? 0),
         },
         createdAt: startedAt,
         updatedAt: startedAt,
@@ -3638,7 +3675,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
-        lastAssistantUuid: resumeState?.resumeSessionAt,
+        lastAssistantUuid: forkPlan ? undefined : resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
         stopped: false,
       };
@@ -3932,6 +3969,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      threadFork: "provider-session",
     },
     startSession,
     sendTurn,

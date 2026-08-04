@@ -22,6 +22,7 @@ import {
   type OrchestrationSession,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
+  type ThreadForkOrigin,
   ModelSelection,
   ProjectId,
   ThreadId,
@@ -255,6 +256,28 @@ function mapTitleRegeneration(row: Schema.Schema.Type<typeof ProjectionThreadDbR
     : null;
 }
 
+/**
+ * Fork lineage for a thread row, spread into the thread object.
+ *
+ * Returns an empty object for a non-fork so the key is omitted entirely rather
+ * than written as null — this rides every thread in every read-model payload and
+ * the overwhelming majority of threads are not forks.
+ *
+ * `forkedFromThreadId` is the discriminator: `tipTurnId` is optional even on a
+ * real fork, because a source thread with no completed turn has no tip to pin.
+ */
+function mapForkedFrom(row: Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>): {
+  readonly forkedFrom?: ThreadForkOrigin;
+} {
+  if (row.forkedFromThreadId == null) return {};
+  return {
+    forkedFrom: {
+      threadId: row.forkedFromThreadId,
+      ...(row.forkedFromTipTurnId != null ? { tipTurnId: row.forkedFromTipTurnId } : {}),
+    },
+  };
+}
+
 function mapSessionRow(
   row: Schema.Schema.Type<typeof ProjectionThreadSessionDbRowSchema>,
 ): OrchestrationSession {
@@ -386,6 +409,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           snoozed_at AS "snoozedAt",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
+          forked_from_thread_id AS "forkedFromThreadId",
+          forked_from_tip_turn_id AS "forkedFromTipTurnId",
+          forked_at AS "forkedAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -420,6 +446,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           snoozed_at AS "snoozedAt",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
+          forked_from_thread_id AS "forkedFromThreadId",
+          forked_from_tip_turn_id AS "forkedFromTipTurnId",
+          forked_at AS "forkedAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -456,6 +485,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           snoozed_at AS "snoozedAt",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
+          forked_from_thread_id AS "forkedFromThreadId",
+          forked_from_tip_turn_id AS "forkedFromTipTurnId",
+          forked_at AS "forkedAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -892,6 +924,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           snoozed_at AS "snoozedAt",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
+          forked_from_thread_id AS "forkedFromThreadId",
+          forked_from_tip_turn_id AS "forkedFromTipTurnId",
+          forked_at AS "forkedAt",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -1329,6 +1364,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 snoozedUntil: row.snoozedUntil,
                 snoozedAt: row.snoozedAt,
                 titleRegeneration: mapTitleRegeneration(row),
+                ...mapForkedFrom(row),
                 deletedAt: row.deletedAt,
                 messages: messagesByThread.get(row.threadId) ?? [],
                 proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -1532,6 +1568,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   snoozedUntil: row.snoozedUntil,
                   snoozedAt: row.snoozedAt,
                   titleRegeneration: mapTitleRegeneration(row),
+                  ...mapForkedFrom(row),
                   deletedAt: row.deletedAt,
                   messages: [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -1666,6 +1703,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       snoozedUntil: row.snoozedUntil,
                       snoozedAt: row.snoozedAt,
                       titleRegeneration: mapTitleRegeneration(row),
+                      ...mapForkedFrom(row),
                       session: sessionByThread.get(row.threadId) ?? null,
                       latestUserMessageAt: row.latestUserMessageAt,
                       hasPendingApprovals: row.pendingApprovalCount > 0,
@@ -1805,6 +1843,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   snoozedUntil: row.snoozedUntil,
                   snoozedAt: row.snoozedAt,
                   titleRegeneration: mapTitleRegeneration(row),
+                  ...mapForkedFrom(row),
                   session: sessionByThread.get(row.threadId) ?? null,
                   latestUserMessageAt: row.latestUserMessageAt,
                   hasPendingApprovals: row.pendingApprovalCount > 0,
@@ -2076,6 +2115,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         snoozedUntil: threadRow.value.snoozedUntil,
         snoozedAt: threadRow.value.snoozedAt,
         titleRegeneration: mapTitleRegeneration(threadRow.value),
+        ...mapForkedFrom(threadRow.value),
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
@@ -2175,6 +2215,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         snoozedUntil: threadRow.value.snoozedUntil,
         snoozedAt: threadRow.value.snoozedAt,
         titleRegeneration: mapTitleRegeneration(threadRow.value),
+        ...mapForkedFrom(threadRow.value),
         deletedAt: null,
         messages: messageRows.map((row) => {
           const message = {

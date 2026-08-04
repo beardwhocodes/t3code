@@ -7,6 +7,7 @@ import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import { canForkThread } from "@t3tools/client-runtime/state/thread-fork";
 import {
   threadSearchMatchKey,
   type EnvironmentThreadSearchMatch,
@@ -111,6 +112,7 @@ interface HomeScreenProps {
   ) => Promise<boolean>;
   readonly onUnsnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly onUnsettleThread: (thread: EnvironmentThreadShell) => void;
+  readonly onForkThread: (thread: EnvironmentThreadShell) => void;
   readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
@@ -518,6 +520,7 @@ export function HomeScreen(props: HomeScreenProps) {
   );
   const handleDeleteThread = props.onDeleteThread;
   const handleUnsettleThread = props.onUnsettleThread;
+  const handleForkThread = props.onForkThread;
   // The settled tail renders in pages; expansion resets when the filter
   // context changes so environment/search flips never inherit a deep page.
   const [settledVisibleCount, setSettledVisibleCount] = useState(
@@ -756,6 +759,11 @@ export function HomeScreen(props: HomeScreenProps) {
           onSnoozeThread={handleSnoozeThread}
           onUnsnoozeThread={handleUnsnoozeThread}
           onUnsettleThread={handleUnsettleThread}
+          // Per thread, not per environment: fork also depends on the thread's
+          // provider instance and its current lifecycle, so it cannot be
+          // precomputed into an environment set like settlement and snooze.
+          forkSupported={canForkThread(thread, serverConfigs.get(thread.environmentId))}
+          onForkThread={handleForkThread}
           onChangeRequestState={handleChangeRequestState}
           projectCwd={
             projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ?? null
@@ -768,6 +776,7 @@ export function HomeScreen(props: HomeScreenProps) {
     [
       handleChangeRequestState,
       handleDeleteThread,
+      handleForkThread,
       handleSettleThread,
       handleSnoozeThread,
       handleUnsnoozeThread,
@@ -825,9 +834,18 @@ export function HomeScreen(props: HomeScreenProps) {
       projectCwdByKey,
       savedConnectionsById: props.savedConnectionsById,
       searchQuery: props.searchQuery,
+      // Server configs decide whether a row offers Fork, and they land after
+      // the first rows draw.
+      serverConfigs,
       threadSearchMatchByKey,
     }),
-    [projectCwdByKey, props.savedConnectionsById, props.searchQuery, threadSearchMatchByKey],
+    [
+      projectCwdByKey,
+      props.savedConnectionsById,
+      props.searchQuery,
+      serverConfigs,
+      threadSearchMatchByKey,
+    ],
   );
 
   const renderItem = useCallback(
@@ -890,6 +908,8 @@ export function HomeScreen(props: HomeScreenProps) {
               onArchiveThread={props.onArchiveThread}
               onDeleteThread={props.onDeleteThread}
               onSelectThread={props.onSelectThread}
+              forkSupported={canForkThread(thread, serverConfigs.get(thread.environmentId))}
+              onForkThread={handleForkThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
             />
@@ -908,6 +928,7 @@ export function HomeScreen(props: HomeScreenProps) {
       }
     },
     [
+      handleForkThread,
       handleSwipeableClose,
       handleSwipeableWillOpen,
       projectCwdByKey,
@@ -919,6 +940,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.onSelectThread,
       props.searchQuery,
       props.savedConnectionsById,
+      serverConfigs,
       threadSearchMatchByKey,
       updateGroupDisplay,
     ],

@@ -552,6 +552,48 @@ const make = Effect.gen(function* () {
       projects: project ? [project] : [],
     });
 
+    // A forked thread seeds its FIRST session from the source thread's provider
+    // conversation. The intent is one-shot by construction rather than by a flag:
+    // it only applies while this thread has no persisted binding of its own, and
+    // the binding is written the moment a session starts. A restart therefore
+    // resumes the fork instead of re-forking the source and discarding whatever
+    // the fork has produced since.
+    //
+    // The source's provider INSTANCE is inherited, not the user's currently
+    // selected one: a Codex rollout only exists under the instance's own
+    // CODEX_HOME, which is the same constraint the continuation-key check above
+    // enforces for instance switches.
+    // Declared, not resolved, here: `ProviderService` owns the session directory,
+    // so it looks the source's cursor and instance up itself. Only applies while
+    // this thread has no live session of its own, which is what makes the fork
+    // intent one-shot — a restart resumes the fork rather than re-forking the
+    // source and discarding whatever the fork has produced since.
+    // Resolve the fork source through the lineage, not just one link up.
+    //
+    // A fork that has not taken a turn owns no provider conversation: its
+    // conversation IS its parent's, at the turn it was forked from. Forking such
+    // a fork therefore has to seed from the nearest ancestor that actually holds
+    // a session, carrying that ancestor's fork point rather than the immediate
+    // parent's (which names a thread with nothing to resume).
+    //
+    // Only the CURSOR walks. The copied history still comes from the immediate
+    // parent, because an ancestor may have kept working since the fork was taken
+    // and the fork must inherit what it actually shows.
+    const forkSource = yield* Effect.gen(function* () {
+      if (!thread.forkedFrom || activeSession !== undefined) return undefined;
+      let origin = thread.forkedFrom;
+      // Bounded: lineage is a chain, but a corrupted row must not spin here.
+      for (let depth = 0; depth < 32; depth += 1) {
+        const ancestor = yield* resolveThread(origin.threadId);
+        if (!ancestor || ancestor.session !== null || !ancestor.forkedFrom) break;
+        origin = ancestor.forkedFrom;
+      }
+      return {
+        threadId: origin.threadId,
+        ...(origin.tipTurnId ? { tipTurnId: origin.tipTurnId } : {}),
+      };
+    });
+
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
@@ -563,6 +605,7 @@ const make = Effect.gen(function* () {
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        ...(forkSource && input?.resumeCursor === undefined ? { forkFrom: forkSource } : {}),
         runtimeMode: desiredRuntimeMode,
       });
 
@@ -740,6 +783,17 @@ const make = Effect.gen(function* () {
       return;
     }
     if (!isTemporaryWorktreeBranch(input.branch)) {
+      return;
+    }
+
+    // A shared worktree has one branch and more than one thread on it. Renaming
+    // it here would rename it out from under the other thread while updating
+    // only this thread's metadata, orphaning the other thread's PR attribution.
+    const shell = yield* projectionSnapshotQuery.getShellSnapshot();
+    const worktreeIsShared = shell.threads.some(
+      (other) => other.id !== input.threadId && other.worktreePath === input.worktreePath,
+    );
+    if (worktreeIsShared) {
       return;
     }
 

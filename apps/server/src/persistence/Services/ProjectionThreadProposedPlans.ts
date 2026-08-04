@@ -29,6 +29,13 @@ export const ListProjectionThreadProposedPlansInput = Schema.Struct({
 export type ListProjectionThreadProposedPlansInput =
   typeof ListProjectionThreadProposedPlansInput.Type;
 
+export const CopyProjectionThreadProposedPlansInput = Schema.Struct({
+  sourceThreadId: ThreadId,
+  targetThreadId: ThreadId,
+});
+export type CopyProjectionThreadProposedPlansInput =
+  typeof CopyProjectionThreadProposedPlansInput.Type;
+
 export const DeleteProjectionThreadProposedPlansInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -44,6 +51,21 @@ export interface ProjectionThreadProposedPlanRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadProposedPlan>, ProjectionRepositoryError>;
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadProposedPlansInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Copy one thread's proposed plans onto another thread, for a fork.
+   *
+   * `plan_id` is a GLOBAL primary key, so copied rows get a derived id. Plan ids
+   * are otherwise deterministic (`plan:<threadId>:turn:<turnId>`), and the fork's
+   * derived id keeps that determinism without colliding with the source.
+   *
+   * `implementation_thread_id` is carried verbatim: it points at a real third
+   * thread, not at the source, so remapping it would break that link.
+   * A no-op when the target already has any plan.
+   */
+  readonly copyThreadHistory: (
+    input: CopyProjectionThreadProposedPlansInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

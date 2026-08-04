@@ -113,6 +113,33 @@ export function requireThread(input: {
   );
 }
 
+/**
+ * Require a thread that exists and has not been deleted.
+ *
+ * `requireThread` deliberately accepts deleted threads: deletion is soft, the row
+ * survives with `deletedAt` stamped, and most commands still need to address it.
+ * A fork must not, though — it would copy a deleted thread's history into a live
+ * one, so it needs this stricter check.
+ */
+export function requireThreadNotDeleted(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
+  return requireThread(input).pipe(
+    Effect.flatMap((thread) =>
+      thread.deletedAt === null
+        ? Effect.succeed(thread)
+        : Effect.fail(
+            invariantError(
+              input.command.type,
+              `Thread '${input.threadId}' is deleted and cannot handle command '${input.command.type}'.`,
+            ),
+          ),
+    ),
+  );
+}
+
 export function requireThreadArchived(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;

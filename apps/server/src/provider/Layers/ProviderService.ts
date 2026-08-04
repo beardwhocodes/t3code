@@ -590,6 +590,36 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.cwd.effective": effectiveCwd ?? "",
         });
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
+
+        // Resolve the fork source here rather than in the caller: this service
+        // owns the session directory, so it is the only layer that can turn
+        // "fork thread X" into the provider-opaque cursor an adapter needs.
+        //
+        // Ignored once this thread has a cursor of its own — by then the fork is
+        // already materialized and re-forking would silently discard everything
+        // it has produced since. That is what makes the intent one-shot.
+        const forkFrom = yield* Effect.gen(function* () {
+          if (input.forkFrom === undefined || effectiveResumeCursor !== undefined) {
+            return undefined;
+          }
+          if (adapter.capabilities.threadFork === "unsupported") {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              `Provider '${adapter.provider}' cannot seed a session from another thread.`,
+            );
+          }
+          const sourceBinding = Option.getOrUndefined(
+            yield* directory.getBinding(input.forkFrom.threadId),
+          );
+          if (sourceBinding?.resumeCursor == null) {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              `Cannot fork thread '${input.forkFrom.threadId}': it has no provider conversation to fork from.`,
+            );
+          }
+          return { ...input.forkFrom, resumeCursor: sourceBinding.resumeCursor };
+        });
+
         yield* prepareMcpSession(threadId, resolvedInstanceId);
         const session = yield* adapter
           .startSession({
@@ -597,6 +627,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             providerInstanceId: resolvedInstanceId,
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
+            ...(forkFrom !== undefined ? { forkFrom } : { forkFrom: undefined }),
           })
           .pipe(Effect.onError(() => clearMcpSession(threadId)));
 

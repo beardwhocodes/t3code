@@ -1,4 +1,5 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
+import { canForkThread } from "@t3tools/client-runtime/state/thread-fork";
 import type {
   EnvironmentId,
   MessageId,
@@ -14,6 +15,7 @@ import {
   serializeComposerFileLink,
   type ComposerTrigger,
 } from "@t3tools/shared/composerTrigger";
+import { StackActions, useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
@@ -267,6 +269,7 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const isDarkMode = useColorScheme() === "dark";
+  const navigation = useNavigation();
   const foregroundColor = useThemeColor("--color-foreground");
   const bodyText = useScaledTextRole("body");
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
@@ -611,9 +614,25 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   );
 
   // ── Options menu ─────────────────────────────────────────
+  // The composer menu is the only per-thread menu on the chat screen, so the
+  // fork action and the way back to a fork's parent both live here.
+  const forkSupported = canForkThread(props.selectedThread, props.serverConfig);
+  const forkedFromThreadId = props.selectedThread.forkedFrom?.threadId ?? null;
   const optionsMenuActions = useMemo(
     () => [
       ...buildProviderOptionMenuActions(providerOptionDescriptors),
+      ...(forkSupported
+        ? [{ id: "options-fork", title: "Fork thread", image: "arrow.triangle.branch" }]
+        : []),
+      ...(forkedFromThreadId === null
+        ? []
+        : [
+            {
+              id: "options-open-fork-source",
+              title: "Open source thread",
+              image: "arrow.uturn.backward",
+            },
+          ]),
       {
         id: "options-runtime",
         title: "Runtime",
@@ -656,7 +675,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         }),
       },
     ],
-    [currentInteractionMode, currentRuntimeMode, providerOptionDescriptors],
+    [
+      currentInteractionMode,
+      currentRuntimeMode,
+      forkSupported,
+      forkedFromThreadId,
+      providerOptionDescriptors,
+    ],
   );
 
   // ── Menu handlers ────────────────────────────────────────
@@ -678,6 +703,25 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         ...currentModelSelection,
         options: providerOptions,
       });
+      return;
+    }
+    if (event === "options-fork") {
+      navigation.navigate("ForkThread", {
+        environmentId: String(props.environmentId),
+        threadId: String(props.selectedThread.id),
+      });
+      return;
+    }
+    if (event === "options-open-fork-source" && forkedFromThreadId !== null) {
+      // An explicit push, not navigate: navigating to the route already focused
+      // would only swap this screen's params, and back would skip the fork
+      // entirely instead of returning to it.
+      navigation.dispatch(
+        StackActions.push("Thread", {
+          environmentId: String(props.environmentId),
+          threadId: String(forkedFromThreadId),
+        }),
+      );
       return;
     }
     if (event.startsWith("options:runtime:")) {

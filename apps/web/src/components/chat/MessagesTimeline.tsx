@@ -4,6 +4,7 @@ import {
   type ScopedThreadRef,
   type ServerProviderSkill,
   type TurnId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
@@ -43,6 +44,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  GitForkIcon,
   CircleAlertIcon,
   EyeIcon,
   GlobeIcon,
@@ -134,6 +136,7 @@ interface TimelineRowSharedState {
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
+  onOpenForkParent: (parentThreadId: ThreadId) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
 }
 
@@ -184,6 +187,13 @@ interface MessagesTimelineProps {
   onManualNavigation: () => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
+  /** Set on a forked thread; drives the in-timeline fork seam. */
+  forkOrigin?: {
+    readonly parentThreadId: ThreadId;
+    readonly parentTitle: string | null;
+    readonly forkedAt: string;
+  } | null;
+  onOpenForkParent?: (parentThreadId: ThreadId) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,10 +229,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onManualNavigation,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
+  forkOrigin = null,
+  onOpenForkParent,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
+
+  const handleOpenForkParent = useCallback(
+    (parentThreadId: ThreadId) => onOpenForkParent?.(parentThreadId),
+    [onOpenForkParent],
+  );
 
   const onToggleTurnFold = useCallback((turnId: TurnId) => {
     setExpandedTurnIds((existing) => {
@@ -310,6 +327,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
+        forkOrigin,
       }),
     [
       timelineEntries,
@@ -321,6 +339,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
+      forkOrigin,
     ],
   );
   const rows = useStableRows(rawRows);
@@ -429,6 +448,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImageExpand,
       onOpenTurnDiff,
       onToggleTurnFold,
+      onOpenForkParent: handleOpenForkParent,
       onToggleWorkGroup,
     }),
     [
@@ -443,6 +463,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImageExpand,
       onOpenTurnDiff,
       onToggleTurnFold,
+      handleOpenForkParent,
       onToggleWorkGroup,
     ],
   );
@@ -862,6 +883,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       ) : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
+      {row.kind === "fork-origin" ? <ForkOriginTimelineRow row={row} /> : null}
     </div>
   );
 });
@@ -1010,6 +1032,34 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
       >
         <span>{row.label}</span>
         <Icon className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The seam in a forked thread: everything above is the parent's conversation,
+ * everything below is this thread's own work.
+ *
+ * Deliberately the same shape as the turn fold above it — a hairline rule with a
+ * small muted control — because it reads as another timeline boundary rather
+ * than a notice. It is the only place that says WHERE the fork happened; the
+ * sidebar and header only say that it is one.
+ */
+function ForkOriginTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fork-origin" }> }) {
+  const ctx = use(TimelineRowCtx);
+
+  return (
+    <div className="border-b border-border/60 pb-2 pt-1">
+      <button
+        type="button"
+        data-scroll-anchor-ignore
+        onClick={() => ctx.onOpenForkParent(row.parentThreadId)}
+        className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+      >
+        <GitForkIcon className="size-3.5" />
+        <span>Forked from {row.parentTitle ?? "a deleted thread"}</span>
+        <ChevronRightIcon className="size-3.5" />
       </button>
     </div>
   );

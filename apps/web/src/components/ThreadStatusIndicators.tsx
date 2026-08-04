@@ -4,10 +4,16 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import type { VcsStatusResult } from "@t3tools/contracts";
-import { CloudIcon, FolderGit2Icon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
+import {
+  CloudIcon,
+  FolderGit2Icon,
+  GitForkIcon,
+  GitPullRequestIcon,
+  TerminalIcon,
+} from "lucide-react";
 import { useMemo } from "react";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
-import { useProject } from "../state/entities";
+import { useProject, useThreadShell } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { vcsEnvironment } from "../state/vcs";
@@ -173,6 +179,55 @@ export function ThreadWorktreeIndicator({
   );
 }
 
+/**
+ * Marks a row as a fork and names its parent.
+ *
+ * Load-bearing, not decoration: a fork that shares its parent's worktree is
+ * otherwise indistinguishable from it in every list — same branch, same
+ * project, same model, and a title that only differs by a suffix.
+ */
+export function ThreadForkIndicator({
+  thread,
+  className,
+}: {
+  thread: Pick<SidebarThreadSummary, "environmentId" | "forkedFrom">;
+  className?: string;
+}) {
+  const forkedFrom = thread.forkedFrom ?? null;
+  const parent = useThreadShell(
+    useMemo(
+      () =>
+        forkedFrom === null ? null : scopeThreadRef(thread.environmentId, forkedFrom.threadId),
+      [forkedFrom, thread.environmentId],
+    ),
+  );
+
+  if (forkedFrom === null) {
+    return null;
+  }
+  // The parent can be gone (deleted, or on an environment this client has not
+  // loaded); the lineage still holds and the badge still explains the row.
+  const tooltip = parent ? `Forked from ${parent.title}` : "Forked from a deleted thread";
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            role="img"
+            aria-label={tooltip}
+            data-testid={`thread-fork-indicator-${forkedFrom.threadId}`}
+            className={`inline-flex shrink-0 items-center justify-center ${className ?? "text-muted-foreground/40"}`}
+          />
+        }
+      >
+        <GitForkIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">{tooltip}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 export function ThreadStatusLabel({
   status,
   compact = false,
@@ -307,13 +362,15 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
   const remoteEnvLabel = environment?.label ?? null;
   const threadEnvironmentLabel = isRemoteThread ? (remoteEnvLabel ?? "Remote") : null;
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  const isFork = thread.forkedFrom != null;
 
-  if (!terminalStatus && !isRemoteThread) {
+  if (!terminalStatus && !isRemoteThread && !isFork) {
     return null;
   }
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
+      <ThreadForkIndicator thread={thread} className="text-muted-foreground/60" />
       {terminalStatus ? (
         <Tooltip>
           <TooltipTrigger

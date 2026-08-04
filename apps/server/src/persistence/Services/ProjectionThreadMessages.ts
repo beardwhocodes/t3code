@@ -49,6 +49,12 @@ export const DeleteProjectionThreadMessagesInput = Schema.Struct({
 });
 export type DeleteProjectionThreadMessagesInput = typeof DeleteProjectionThreadMessagesInput.Type;
 
+export const CopyProjectionThreadMessagesInput = Schema.Struct({
+  sourceThreadId: ThreadId,
+  targetThreadId: ThreadId,
+});
+export type CopyProjectionThreadMessagesInput = typeof CopyProjectionThreadMessagesInput.Type;
+
 /**
  * ProjectionThreadMessageRepositoryShape - Service API for projected thread messages.
  */
@@ -83,6 +89,21 @@ export interface ProjectionThreadMessageRepositoryShape {
    */
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadMessagesInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Copy one thread's messages onto another thread, for a fork.
+   *
+   * Set-based and id-regenerating: each copied row gets a fresh `message_id`
+   * derived by `forkRowId`, because `message_id` is a GLOBAL primary key and
+   * `upsert` reassigns `thread_id` on conflict — reusing a source id would move
+   * the source's row instead of duplicating it.
+   *
+   * A no-op when the target already has any message, so a projector replay of the
+   * fork event cannot copy the source's post-fork history.
+   */
+  readonly copyThreadHistory: (
+    input: CopyProjectionThreadMessagesInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

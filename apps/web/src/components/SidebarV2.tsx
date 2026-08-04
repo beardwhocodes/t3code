@@ -6,6 +6,7 @@ import {
   effectiveSnoozed,
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
+import { canForkThread } from "@t3tools/client-runtime/state/thread-fork";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
   scopeProjectRef,
@@ -26,6 +27,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  GitForkIcon,
   EllipsisIcon,
   MessageSquareIcon,
   PlusIcon,
@@ -86,12 +88,13 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { openCommandPalette } from "../commandPaletteBus";
+import { requestThreadFork } from "../forkThreadBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import { useProjects, useThreadShells } from "../state/entities";
+import { useProjects, useThreadShell, useThreadShells } from "../state/entities";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
@@ -129,6 +132,7 @@ import {
   resolveThreadPr,
   settledPrHoverColorClass,
   terminalStatusFromRunningIds,
+  ThreadForkIndicator,
   type TerminalStatusIndicator,
 } from "./ThreadStatusIndicators";
 import {
@@ -255,6 +259,16 @@ function SidebarV2ThreadTooltip({
   terminalStatus: TerminalStatusIndicator | null;
   terminalProcessCount: number;
 }) {
+  // A shared-worktree fork matches its parent on every other line of this
+  // card, so lineage has to be one of them.
+  const forkedFrom = thread.forkedFrom ?? null;
+  const forkParent = useThreadShell(
+    useMemo(
+      () =>
+        forkedFrom === null ? null : scopeThreadRef(thread.environmentId, forkedFrom.threadId),
+      [forkedFrom, thread.environmentId],
+    ),
+  );
   return (
     <TooltipPopup
       side="right"
@@ -288,6 +302,14 @@ function SidebarV2ThreadTooltip({
             <div className="flex min-w-0 items-center gap-2">
               <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
               <div className="min-w-0 truncate text-foreground/75">{thread.branch}</div>
+            </div>
+          ) : null}
+          {forkedFrom ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <GitForkIcon className="size-3 shrink-0 stroke-muted-foreground" />
+              <div className="min-w-0 truncate text-foreground/75">
+                Forked from {forkParent?.title ?? "a deleted thread"}
+              </div>
             </div>
           ) : null}
           {branchMismatch ? (
@@ -819,6 +841,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               />
             </span>
             {title}
+            <ThreadForkIndicator thread={thread} />
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
@@ -1027,6 +1050,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               ) : (
                 <span className="flex-1" />
               )}
+              <ThreadForkIndicator thread={thread} />
               {terminalStatusIcon}
               {prBadge}
               {diff ? (
@@ -2301,6 +2325,9 @@ export default function SidebarV2() {
         const supportsTitleRegeneration =
           serverConfigs.get(thread.environmentId)?.environment.capabilities
             .threadTitleRegeneration === true;
+        // Both fork gates are absent-means-false, so an older server or a
+        // provider instance that cannot seed a session hides the item entirely.
+        const canFork = canForkThread(thread, serverConfigs.get(thread.environmentId));
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
@@ -2339,6 +2366,7 @@ export default function SidebarV2() {
                         },
                   ]
                 : []),
+              ...(canFork ? [{ id: "fork", label: "Fork thread" }] : []),
               { id: "rename", label: "Rename thread" },
               ...(supportsTitleRegeneration
                 ? [
@@ -2397,6 +2425,11 @@ export default function SidebarV2() {
             return;
           case "unsnooze":
             attemptUnsnooze(threadRef);
+            return;
+          case "fork":
+            // The native menu cannot host the title field or the workspace
+            // radios, so it resolves first and the React dialog takes over.
+            requestThreadFork(threadRef);
             return;
           case "rename":
             startThreadRename(threadRef, thread.title);

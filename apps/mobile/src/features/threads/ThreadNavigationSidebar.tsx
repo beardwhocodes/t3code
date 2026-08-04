@@ -3,6 +3,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import { canForkThread } from "@t3tools/client-runtime/state/thread-fork";
 import {
   threadSearchMatchKey,
   type EnvironmentThreadSearchMatch,
@@ -141,6 +142,9 @@ interface ThreadNavigationSidebarProps {
   readonly onNewThreadInProject: (project: EnvironmentProject) => void;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
+  /** Presents the fork sheet from the ROOT navigator: on iOS this pane lives in
+      its own navigation-inert stack and cannot present it itself. */
+  readonly onForkThread: (thread: EnvironmentThreadShell) => void;
   readonly onRequestVisibility: () => void;
   readonly searchQuery: string;
 }
@@ -918,6 +922,11 @@ function ThreadNavigationSidebarPane(
               onSnoozeThread={snoozeThread}
               onUnsnoozeThread={unsnoozeThread}
               onUnsettleThread={unsettleThread}
+              // Per thread, not per environment: fork also depends on the
+              // thread's provider instance and its current lifecycle, so it
+              // cannot be precomputed into an environment set.
+              forkSupported={canForkThread(thread, serverConfigs.get(thread.environmentId))}
+              onForkThread={props.onForkThread}
               onChangeRequestState={handleChangeRequestState}
               projectCwd={projectCwdByKey.get(scopeKey) ?? null}
               onSwipeableClose={handleSwipeableClose}
@@ -1018,6 +1027,8 @@ function ThreadNavigationSidebarPane(
               onArchiveThread={archiveThread}
               onDeleteThread={confirmDeleteThread}
               onSelectThread={handleSelectThread}
+              forkSupported={canForkThread(thread, serverConfigs.get(thread.environmentId))}
+              onForkThread={props.onForkThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
               simultaneousSwipeGesture={sidebarScrollGesture}
@@ -1048,6 +1059,7 @@ function ThreadNavigationSidebarPane(
       projectByKey,
       projectCwdByKey,
       projectTitleByProjectKey,
+      props.onForkThread,
       props.onNewThreadInProject,
       props.searchQuery,
       props.selectedThreadKey,

@@ -4,7 +4,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { toPersistenceSqlError } from "../Errors.ts";
+import { FORK_ROW_ID_PREFIX } from "../forkRowIds.ts";
 import {
+  CopyProjectionThreadProposedPlansInput,
   DeleteProjectionThreadProposedPlansInput,
   ListProjectionThreadProposedPlansInput,
   ProjectionThreadProposedPlan,
@@ -47,6 +49,36 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
         implementation_thread_id = excluded.implementation_thread_id,
         created_at = excluded.created_at,
         updated_at = excluded.updated_at
+    `,
+  });
+
+  const copyProjectionThreadProposedPlanRows = SqlSchema.void({
+    Request: CopyProjectionThreadProposedPlansInput,
+    execute: ({ sourceThreadId, targetThreadId }) => sql`
+      INSERT INTO projection_thread_proposed_plans (
+        plan_id,
+        thread_id,
+        turn_id,
+        plan_markdown,
+        implemented_at,
+        implementation_thread_id,
+        created_at,
+        updated_at
+      )
+      SELECT
+        ${`${FORK_ROW_ID_PREFIX}:${targetThreadId}:`} || plan_id,
+        ${targetThreadId},
+        turn_id,
+        plan_markdown,
+        implemented_at,
+        implementation_thread_id,
+        created_at,
+        updated_at
+      FROM projection_thread_proposed_plans
+      WHERE thread_id = ${sourceThreadId}
+        AND NOT EXISTS (
+          SELECT 1 FROM projection_thread_proposed_plans WHERE thread_id = ${targetThreadId}
+        )
     `,
   });
 
@@ -98,10 +130,20 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
       ),
     );
 
+  const copyThreadHistory: ProjectionThreadProposedPlanRepositoryShape["copyThreadHistory"] = (
+    input,
+  ) =>
+    copyProjectionThreadProposedPlanRows(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadProposedPlanRepository.copyThreadHistory:query"),
+      ),
+    );
+
   return {
     upsert,
     listByThreadId,
     deleteByThreadId,
+    copyThreadHistory,
   } satisfies ProjectionThreadProposedPlanRepositoryShape;
 });
 

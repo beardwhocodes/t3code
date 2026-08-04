@@ -62,7 +62,10 @@ import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgro
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
+import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
+import { checkpointRefForThreadTurn } from "./checkpointing/Utils.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -356,6 +359,7 @@ const makeWsRpcLayer = (
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
+      const checkpointStore = yield* CheckpointStore.CheckpointStore;
       const keybindings = yield* Keybindings.Keybindings;
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
@@ -953,19 +957,182 @@ const makeWsRpcLayer = (
           );
         });
 
+      /**
+       * Prepare and dispatch a forking `thread.create`.
+       *
+       * Worktree work lives in this layer, not in a reactor, for the same reason
+       * the turn-start bootstrap does: reactors read an in-memory PubSub that is
+       * published only after commit and is never replayed at startup, so a crash
+       * between the two would leave a thread with copied history, no workspace,
+       * and no way to recover. Here the client sees the failure and the
+       * compensation runs.
+       *
+       * Everything durable happens in ONE command: the thread row, the copied
+       * history and the lineage all land in the engine's single transaction. The
+       * provider session is not touched at all — it is forked lazily on the
+       * fork's first turn — so the only step that can leave debris is the
+       * worktree, and that is compensated below.
+       */
+      const dispatchThreadForkCreate = (
+        command: Extract<OrchestrationCommand, { type: "thread.create" }>,
+      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
+        Effect.gen(function* () {
+          const forkedFrom = command.forkedFrom;
+          if (!forkedFrom) {
+            return yield* orchestrationEngine.dispatch(command);
+          }
+
+          const sourceShell = yield* projectionSnapshotQuery.getThreadShellById(
+            forkedFrom.threadId,
+          );
+          if (Option.isNone(sourceShell)) {
+            return yield* Effect.fail(
+              new OrchestrationDispatchCommandError({
+                message: `Cannot fork thread ${forkedFrom.threadId}: it does not exist.`,
+              }),
+            );
+          }
+          const source = sourceShell.value;
+
+          // Defence in depth for the client's hide. The decider cannot make this
+          // call — it is pure over the read model and has no adapter access — and
+          // refusing later, after the event is committed, would leave an orphan
+          // thread. So it happens here, before anything is persisted.
+          const sourceInstanceId =
+            source.session?.providerInstanceId ?? source.modelSelection.instanceId;
+          const providers = yield* providerRegistry.getProviders;
+          const sourceProvider = providers.find(
+            (provider) => provider.instanceId === sourceInstanceId,
+          );
+          if (sourceProvider?.supportsThreadFork !== true) {
+            return yield* Effect.fail(
+              new OrchestrationDispatchCommandError({
+                message: `Provider instance ${sourceInstanceId} cannot fork a session.`,
+              }),
+            );
+          }
+
+          let createdWorktreePath: string | null = null;
+          const removeCreatedWorktree = () =>
+            createdWorktreePath === null
+              ? Effect.void
+              : gitWorkflow
+                  .removeWorktree({
+                    cwd: config.cwd,
+                    path: createdWorktreePath,
+                    force: true,
+                  })
+                  .pipe(Effect.ignoreCause({ log: true }));
+
+          const forkProgram = Effect.gen(function* () {
+            let worktreePath = command.worktreePath;
+            let branch = command.branch;
+
+            if (forkedFrom.worktree === "new") {
+              const project = yield* projectionSnapshotQuery.getProjectShellById(command.projectId);
+              if (Option.isNone(project)) {
+                return yield* Effect.fail(
+                  new OrchestrationDispatchCommandError({
+                    message: `Cannot fork into a new worktree: project ${command.projectId} is unknown.`,
+                  }),
+                );
+              }
+              // Seeding the fork's workspace is capture-then-restore, not
+              // "branch at the checkpoint". Checkpoint commits are PARENTLESS
+              // root commits of the whole tree, so a worktree created AT one has
+              // a single-commit history, no merge base with the base branch, and
+              // a clean status — every inherited change would look already
+              // committed and no sane pull request could come out of it.
+              //
+              // Branching at the source's own branch and then restoring its
+              // checkpoint over the new directory reproduces the source's exact
+              // working state, uncommitted and untracked files included, while
+              // keeping real history behind it.
+              const sourceCwd = source.worktreePath ?? project.value.workspaceRoot;
+              const seedRef = checkpointRefForThreadTurn(command.threadId, 0);
+              const seeded = yield* checkpointStore
+                .captureCheckpoint({ cwd: sourceCwd, checkpointRef: seedRef })
+                .pipe(
+                  Effect.as(true),
+                  // A source outside git has no working state to carry over. The
+                  // fork still gets its worktree; it just starts at the branch.
+                  Effect.catchCause(() => Effect.succeed(false)),
+                );
+
+              // A fork ALWAYS needs its own branch. `git worktree add` refuses a
+              // branch that is already checked out elsewhere, so reusing the
+              // source's would fail outright for the common case of forking a
+              // thread that already has a worktree.
+              const forkBranchToken = yield* randomUUID;
+              const forkBranch =
+                command.branch ?? buildTemporaryWorktreeBranchName(() => forkBranchToken);
+              const worktree = yield* gitWorkflow.createWorktree({
+                cwd: project.value.workspaceRoot,
+                refName: source.branch ?? "HEAD",
+                newRefName: forkBranch,
+                ...(source.branch ? { baseRefName: source.branch } : {}),
+                path: null,
+              });
+              createdWorktreePath = worktree.worktree.path;
+              worktreePath = worktree.worktree.path;
+              branch = worktree.worktree.refName;
+
+              if (seeded) {
+                yield* checkpointStore
+                  .restoreCheckpoint({
+                    cwd: worktree.worktree.path,
+                    checkpointRef: seedRef,
+                    fallbackToHead: false,
+                  })
+                  .pipe(Effect.catchCause(() => Effect.succeed(false)));
+              }
+            } else {
+              // Sharing: the fork points at exactly what the source points at,
+              // which may be null — then both threads run in the project root.
+              worktreePath = source.worktreePath;
+              branch = source.branch;
+            }
+
+            const result = yield* orchestrationEngine.dispatch({
+              ...command,
+              branch,
+              worktreePath,
+            });
+            if (worktreePath !== null) {
+              yield* refreshGitStatus(worktreePath);
+            }
+            return result;
+          });
+
+          return yield* forkProgram.pipe(
+            Effect.catchCause((cause) => {
+              const dispatchError = toBootstrapDispatchCommandCauseError(cause);
+              if (Cause.hasInterruptsOnly(cause)) {
+                return Effect.fail(dispatchError);
+              }
+              // Unlike the turn-start bootstrap, there is no thread row to clean
+              // up: the worktree is created BEFORE the command, so a failed
+              // dispatch leaves only the directory and its branch behind.
+              return removeCreatedWorktree().pipe(Effect.flatMap(() => Effect.fail(dispatchError)));
+            }),
+          );
+        }).pipe(Effect.mapError((cause) => toDispatchCommandError(cause, "Failed to fork thread")));
+
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)
-            : orchestrationEngine
-                .dispatch(normalizedCommand)
-                .pipe(
-                  Effect.mapError((cause) =>
-                    toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-                  ),
-                );
+            : normalizedCommand.type === "thread.create" && normalizedCommand.forkedFrom
+              ? dispatchThreadForkCreate(normalizedCommand)
+              : orchestrationEngine
+                  .dispatch(normalizedCommand)
+                  .pipe(
+                    Effect.mapError((cause) =>
+                      toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+                    ),
+                  );
 
         return startup
           .enqueueCommand(dispatchEffect)

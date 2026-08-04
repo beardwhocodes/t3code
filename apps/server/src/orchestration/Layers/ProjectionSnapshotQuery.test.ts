@@ -1272,6 +1272,71 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("carries fork lineage on every per-thread read, not only bulk snapshots", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json,
+          scripts_json, created_at, updated_at, deleted_at
+        )
+        VALUES (
+          'project-fork', 'Project fork', '/tmp/project-fork',
+          '{"provider":"codex","model":"gpt-5-codex"}', '[]',
+          '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:01.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode,
+          interaction_mode, branch, worktree_path, latest_turn_id,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, forked_from_thread_id, forked_from_tip_turn_id,
+          forked_at, created_at, updated_at, deleted_at
+        )
+        VALUES (
+          'thread-fork', 'project-fork', 'Fork',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default',
+          NULL, NULL, NULL, NULL, 0, 0, 0,
+          'thread-parent', 'turn-7', '2026-02-24T00:00:09.000Z',
+          '2026-02-24T00:00:09.000Z', '2026-02-24T00:00:09.000Z', NULL
+        )
+      `;
+
+      // These two are the per-thread reads. `getThreadShellById` in particular
+      // backs the shell push that fires on EVERY thread-aggregate event, so a
+      // missing field here does not fail loudly — it silently strips lineage
+      // from the sidebar the moment the thread does anything, and a later bulk
+      // snapshot puts it back. That flicker is the regression this pins.
+      const shell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-fork"));
+      assert.equal(shell._tag, "Some");
+      if (shell._tag === "Some") {
+        assert.deepEqual(shell.value.forkedFrom, {
+          threadId: ThreadId.make("thread-parent"),
+          tipTurnId: asTurnId("turn-7"),
+        });
+      }
+
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-fork"));
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "Some") {
+        assert.deepEqual(detail.value.forkedFrom, {
+          threadId: ThreadId.make("thread-parent"),
+          tipTurnId: asTurnId("turn-7"),
+        });
+      }
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      assert.deepEqual(
+        shellSnapshot.threads.find((thread) => thread.id === ThreadId.make("thread-fork"))
+          ?.forkedFrom,
+        { threadId: ThreadId.make("thread-parent"), tipTurnId: asTurnId("turn-7") },
+      );
+    }),
+  );
+
   it.effect("uses projection_threads.latest_turn_id for bulk command and shell snapshots", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

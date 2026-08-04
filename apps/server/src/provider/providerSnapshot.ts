@@ -215,6 +215,15 @@ export function buildServerProvider(input: {
   models: ReadonlyArray<ServerProviderModel>;
   slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   skills?: ReadonlyArray<ServerProviderSkill>;
+  /**
+   * Whether this instance can seed a new session from an existing one.
+   *
+   * Deliberately NOT part of `presentation`: for ACP-backed providers the answer
+   * is a per-connection agent capability discovered by the probe, so a static
+   * per-driver constant could never be corrected. Omitting it means "no", which
+   * is the safe direction — the client hides the action until a probe proves it.
+   */
+  supportsThreadFork?: boolean;
   probe: ProviderProbeResult;
 }): ServerProviderDraft {
   const versionAdvisory = input.driver
@@ -233,6 +242,7 @@ export function buildServerProvider(input: {
     ...(typeof input.presentation.requiresNewThreadForModelChange === "boolean"
       ? { requiresNewThreadForModelChange: input.presentation.requiresNewThreadForModelChange }
       : {}),
+    ...(input.supportsThreadFork === true ? { supportsThreadFork: true } : {}),
     enabled: input.enabled,
     installed: input.probe.installed,
     version: input.probe.version,

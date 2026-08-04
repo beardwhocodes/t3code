@@ -67,8 +67,23 @@ function threadTimeLabel(thread: EnvironmentThreadShell): string {
 
 // Menus stay lifecycle-focused: settle/un-settle plus delete. Archive keeps
 // its own surface (thread screen / settings) rather than crowding the row.
+// Fork appears per THREAD rather than per menu variant, so each variant that
+// can host it comes in a with-fork and a without-fork constant: the row picks
+// one instead of allocating a fresh array every render.
+const FORK_MENU_ACTION: MenuAction = {
+  id: "fork",
+  title: "Fork thread",
+  image: "arrow.triangle.branch",
+};
+
 const CARD_MENU_ACTIONS: MenuAction[] = [
   { id: "settle", title: "Settle", image: "checkmark" },
+  { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
+];
+
+const CARD_FORK_MENU_ACTIONS: MenuAction[] = [
+  { id: "settle", title: "Settle", image: "checkmark" },
+  FORK_MENU_ACTION,
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
@@ -77,12 +92,20 @@ const SLIM_MENU_ACTIONS: MenuAction[] = [
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
+const SLIM_FORK_MENU_ACTIONS: MenuAction[] = [
+  { id: "unsettle", title: "Un-settle", image: "arrow.uturn.backward" },
+  FORK_MENU_ACTION,
+  { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
+];
+
 const SNOOZED_MENU_ACTIONS: MenuAction[] = [
   { id: "unsnooze", title: "Wake thread", image: "clock" },
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
-// Pre-settlement servers: no lifecycle items, archive fills the gap.
+// Pre-settlement servers: no lifecycle items, archive fills the gap. No fork
+// either — threadFork landed after threadSettlement, so a server missing the
+// older capability cannot have the newer one.
 const LEGACY_MENU_ACTIONS: MenuAction[] = [
   { id: "archive", title: "Archive", image: "archivebox" },
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
@@ -337,11 +360,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onUnsnoozeThread: (thread: EnvironmentThreadShell) => void;
   readonly onUnsettleThread: (thread: EnvironmentThreadShell) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
+  readonly onForkThread: (thread: EnvironmentThreadShell) => void;
   /** False on environments whose server predates thread.settle/unsettle:
       swipe + menu fall back to Archive instead of failing on use. */
   readonly settlementSupported: boolean;
   /** False on servers that predate thread.snooze/unsnooze. */
   readonly snoozeSupported: boolean;
+  /** Per THREAD, not per environment: the server must understand forks AND the
+      thread's provider instance must be able to seed a session from an existing
+      one. False hides the entry rather than failing on use. */
+  readonly forkSupported: boolean;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   /** Reports this row's live PR state up so the partition can auto-settle
@@ -368,6 +396,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onUnsnoozeThread,
     onUnsettleThread,
     onArchiveThread,
+    onForkThread,
     onChangeRequestState,
   } = props;
   const snoozedRow = props.snoozed === true;
@@ -383,12 +412,25 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const drawerColor = useThemeColor("--color-drawer");
   const pressedBackgroundColor = useThemeColor("--color-subtle");
   const selectedBackgroundColor = useThemeColor("--color-user-bubble");
+  const iconSubtleColor = useThemeColor("--color-icon-subtle");
   const sidebarPane = props.pane === "sidebar";
   const selected = props.selected === true;
 
   const status = resolveThreadListV2Status(thread);
   const statusLabel = STATUS_LABEL_BY_STATUS[status];
   const timeLabel = threadTimeLabel(thread);
+  // A shared-worktree fork carries its parent's title, branch, project and
+  // model, so the row is otherwise identical to the thread it came from.
+  const forked = thread.forkedFrom != null;
+  const forkGlyph = forked ? (
+    <SymbolView
+      name="arrow.triangle.branch"
+      size={12}
+      tintColor={selected ? "#ffffff" : iconSubtleColor}
+      type="monochrome"
+    />
+  ) : null;
+  const rowAccessibilityLabel = forked ? `${thread.title}, forked thread` : thread.title;
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleSettle = useCallback(() => onSettleThread(thread), [onSettleThread, thread]);
@@ -399,6 +441,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleUnsnooze = useCallback(() => onUnsnoozeThread(thread), [onUnsnoozeThread, thread]);
   const handleUnsettle = useCallback(() => onUnsettleThread(thread), [onUnsettleThread, thread]);
   const handleArchive = useCallback(() => onArchiveThread(thread), [onArchiveThread, thread]);
+  const handleFork = useCallback(() => onForkThread(thread), [onForkThread, thread]);
 
   // Swipe: the v2 primary action is the lifecycle transition. Every settled
   // row can un-settle — explicit settles clear the override, auto-settled
@@ -443,9 +486,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         image: "clock",
         subactions: snoozePresetActions,
       },
+      ...(props.forkSupported ? [FORK_MENU_ACTION] : []),
       { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
     ],
-    [snoozePresetActions],
+    [props.forkSupported, snoozePresetActions],
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
@@ -453,6 +497,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "unsettle") handleUnsettle();
       if (nativeEvent.event === "unsnooze") handleUnsnooze();
       if (nativeEvent.event === "archive") handleArchive();
+      if (nativeEvent.event === "fork") handleFork();
       if (nativeEvent.event === "delete") handleDelete();
       const snoozeSelection = resolveThreadListV2SnoozeMenuSelection({
         event: nativeEvent.event,
@@ -468,6 +513,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     [
       handleArchive,
       handleDelete,
+      handleFork,
       handleSettle,
       handleSnooze,
       handleUnsettle,
@@ -569,15 +615,19 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           {statusLabel?.label ?? timeLabel}
         </Text>
       </View>
-      <Text
-        className={cn(
-          "mt-1 text-base font-t3-medium",
-          selected ? "text-user-bubble-foreground" : "text-foreground",
-        )}
-        numberOfLines={2}
-      >
-        {thread.title}
-      </Text>
+      <View className="mt-1 flex-row items-start gap-1.5">
+        {/* Aligned to the first line: a card title wraps to two. */}
+        {forkGlyph === null ? null : <View className="pt-1">{forkGlyph}</View>}
+        <Text
+          className={cn(
+            "flex-1 text-base font-t3-medium",
+            selected ? "text-user-bubble-foreground" : "text-foreground",
+          )}
+          numberOfLines={2}
+        >
+          {thread.title}
+        </Text>
+      </View>
       {props.searchMatch ? (
         <View className="mt-1">
           <ThreadSearchMatchExcerpt
@@ -659,7 +709,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     variant === "card" ? (
       <Pressable
         accessibilityHint={swipeAccessibilityHint}
-        accessibilityLabel={thread.title}
+        accessibilityLabel={rowAccessibilityLabel}
         accessibilityRole="button"
         accessibilityState={{ selected }}
         onPress={() => {
@@ -697,7 +747,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     ) : (
       <Pressable
         accessibilityHint={swipeAccessibilityHint}
-        accessibilityLabel={thread.title}
+        accessibilityLabel={rowAccessibilityLabel}
         accessibilityRole="button"
         accessibilityState={{ selected }}
         className={sidebarPane ? undefined : "bg-screen"}
@@ -736,15 +786,18 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             </View>
           ) : null}
           <View className="min-w-0 flex-1">
-            <Text
-              className={cn(
-                "text-base",
-                selected ? "text-user-bubble-foreground" : "text-foreground-muted",
-              )}
-              numberOfLines={1}
-            >
-              {thread.title}
-            </Text>
+            <View className="flex-row items-center gap-1.5">
+              {forkGlyph}
+              <Text
+                className={cn(
+                  "flex-1 text-base",
+                  selected ? "text-user-bubble-foreground" : "text-foreground-muted",
+                )}
+                numberOfLines={1}
+              >
+                {thread.title}
+              </Text>
+            </View>
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
                 match={props.searchMatch}
@@ -802,10 +855,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 : !props.settlementSupported
                   ? LEGACY_MENU_ACTIONS
                   : canUnsettle
-                    ? SLIM_MENU_ACTIONS
+                    ? props.forkSupported
+                      ? SLIM_FORK_MENU_ACTIONS
+                      : SLIM_MENU_ACTIONS
                     : swipeActions.secondary === "snooze"
                       ? snoozableCardMenuActions
-                      : CARD_MENU_ACTIONS
+                      : props.forkSupported
+                        ? CARD_FORK_MENU_ACTIONS
+                        : CARD_MENU_ACTIONS
             }
             onPressAction={handleMenuAction}
             shouldOpenOnLongPress

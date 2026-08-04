@@ -922,6 +922,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       models,
       slashCommands: dedupedSlashCommands,
       skills,
+      // Forking is a property of the installed CLI, not of whether this probe
+      // could read an auth status. A thread on a provider in this degraded-but-
+      // usable state still runs turns, so hiding fork here would take the action
+      // away for a reason that has nothing to do with forking.
+      supportsThreadFork: true,
       probe: {
         installed: true,
         version: parsedVersion,
@@ -944,6 +949,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     models,
     slashCommands: dedupedSlashCommands,
     skills,
+    // `resume` + `forkSession` mints a new session id and copies the parent
+    // transcript without writing to it, so a healthy Claude instance can fork.
+    supportsThreadFork: true,
     probe: {
       installed: true,
       version: parsedVersion,

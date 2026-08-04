@@ -294,7 +294,17 @@ export function projectEvent(
             settledAt: null,
             snoozedUntil: null,
             snoozedAt: null,
+            // Omitted entirely on a non-fork rather than written as null: this
+            // object is part of every thread in every read-model payload, and
+            // the overwhelming majority of threads are not forks.
+            ...(payload.forkedFrom ? { forkedFrom: payload.forkedFrom } : {}),
             deletedAt: null,
+            // A fork's copied history deliberately does NOT land here. This is the
+            // command read model, which the engine rebuilds at boot with empty
+            // message/activity/checkpoint arrays for every thread. Cloning the
+            // source's arrays would give a fork full history on a hot process and
+            // none after a restart — a read model that disagrees with itself
+            // across restarts. The copy lives in the SQL projection instead.
             messages: [],
             activities: [],
             checkpoints: [],

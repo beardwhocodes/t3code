@@ -19,6 +19,7 @@ import {
   requireThreadArchived,
   requireThreadAbsent,
   requireThreadNotArchived,
+  requireThreadNotDeleted,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -355,6 +356,60 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+
+      // A fork validates its SOURCE here. Only what the command read model
+      // actually carries can be checked: `getCommandReadModel` returns empty
+      // messages/activities/checkpoints for every thread, so any check against
+      // history would be silently vacuous. Session status and latestTurn ARE
+      // populated, so "is the source busy" is decidable.
+      //
+      // Whether the source's PROVIDER can fork is not decidable here at all —
+      // the decider is pure over the read model and has no adapter access — so
+      // that refusal lives at the dispatch boundary, before this event exists.
+      if (command.forkedFrom) {
+        const source = yield* requireThreadNotDeleted({
+          readModel,
+          command,
+          threadId: command.forkedFrom.threadId,
+        });
+        if (source.archivedAt !== null) {
+          return yield* Effect.fail(
+            new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: `thread ${source.id} is archived and cannot be forked`,
+            }),
+          );
+        }
+        // A fork that has not taken a turn has no session of its own, but it
+        // does have a conversation — its parent's, at the turn it forked from —
+        // and forking it resolves through that lineage. Only a thread that is
+        // neither a fork nor ever started a session has nothing to copy.
+        if (source.session === null && !source.forkedFrom) {
+          return yield* Effect.fail(
+            new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: `thread ${source.id} has no provider session to fork from`,
+            }),
+          );
+        }
+        if (source.session?.status === "starting" || source.session?.status === "running") {
+          return yield* Effect.fail(
+            new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: `thread ${source.id} has an active session and cannot be forked`,
+            }),
+          );
+        }
+        if (source.latestTurn?.state === "running") {
+          return yield* Effect.fail(
+            new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: `thread ${source.id} has a running turn and cannot be forked`,
+            }),
+          );
+        }
+      }
+
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -372,6 +427,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.forkedFrom
+            ? {
+                forkedFrom: {
+                  threadId: command.forkedFrom.threadId,
+                  ...(command.forkedFrom.tipTurnId
+                    ? { tipTurnId: command.forkedFrom.tipTurnId }
+                    : {}),
+                },
+              }
+            : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },

@@ -1171,3 +1171,80 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
   });
 });
+
+describe("fork seam", () => {
+  const message = (id: string, createdAt: string, text: string) => ({
+    id: `${id}-entry`,
+    kind: "message" as const,
+    createdAt,
+    message: {
+      id: id as never,
+      role: "user" as const,
+      text,
+      turnId: null,
+      createdAt,
+      updatedAt: createdAt,
+      streaming: false,
+    },
+  });
+
+  const FORK_ORIGIN = {
+    parentThreadId: "thread-parent" as never,
+    parentTitle: "Parent thread",
+    forkedAt: "2026-01-01T00:10:00Z",
+  };
+
+  it("splits inherited history from the fork's own work", () => {
+    // Copied rows keep the SOURCE's timestamps, so everything older than the
+    // fork's creation is inherited and the seam belongs at that boundary.
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        message("inherited-1", "2026-01-01T00:00:00Z", "from the parent"),
+        message("inherited-2", "2026-01-01T00:05:00Z", "also from the parent"),
+        message("own-1", "2026-01-01T00:20:00Z", "written in the fork"),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      forkOrigin: FORK_ORIGIN,
+    });
+
+    const seamIndex = rows.findIndex((row) => row.kind === "fork-origin");
+    const ownIndex = rows.findIndex(
+      (row) => row.kind === "message" && row.message.id === ("own-1" as never),
+    );
+    const lastInheritedIndex = rows.findIndex(
+      (row) => row.kind === "message" && row.message.id === ("inherited-2" as never),
+    );
+
+    expect(seamIndex).toBeGreaterThan(lastInheritedIndex);
+    expect(seamIndex).toBeLessThan(ownIndex);
+    expect(rows.filter((row) => row.kind === "fork-origin")).toHaveLength(1);
+  });
+
+  it("closes the transcript when the fork has done nothing yet", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [message("inherited-1", "2026-01-01T00:00:00Z", "from the parent")],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      forkOrigin: FORK_ORIGIN,
+    });
+
+    expect(rows.at(-1)?.kind).toBe("fork-origin");
+  });
+
+  it("renders no seam on an ordinary thread", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [message("m1", "2026-01-01T00:00:00Z", "hello")],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.some((row) => row.kind === "fork-origin")).toBe(false);
+  });
+});

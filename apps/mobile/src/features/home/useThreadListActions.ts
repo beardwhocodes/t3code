@@ -1,5 +1,10 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import {
+  buildThreadForkCreateInput,
+  canForkThread,
+} from "@t3tools/client-runtime/state/thread-fork";
 import { canSettle, canSnooze } from "@t3tools/client-runtime/state/thread-settled";
+import { ThreadId, type ThreadForkWorktreeMode } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
 import { useCallback, useRef } from "react";
@@ -7,6 +12,7 @@ import { Alert } from "react-native";
 
 import { showConfirmDialog } from "../../components/ConfirmDialogHost";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { uuidv4 } from "../../lib/uuid";
 import { refreshArchivedThreadsForEnvironment } from "../archive/useArchivedThreadSnapshots";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentServerConfigsAtom } from "../../state/server";
@@ -26,6 +32,16 @@ function environmentSupportsSnooze(environmentId: EnvironmentThreadShell["enviro
   return (
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
       .threadSnooze === true
+  );
+}
+
+/** Fork gates on the server config as a whole, not one capability flag: the
+    environment must understand forks AND the thread's provider instance must be
+    able to seed a session from an existing one. `canForkThread` owns both. */
+function environmentSupportsFork(thread: EnvironmentThreadShell) {
+  return canForkThread(
+    thread,
+    appAtomRegistry.get(environmentServerConfigsAtom).get(thread.environmentId),
   );
 }
 
@@ -198,14 +214,21 @@ function useConfirmDeleteThread(
 export function useThreadListActions(): {
   readonly archiveThread: (thread: EnvironmentThreadShell) => void;
   readonly confirmDeleteThread: (thread: EnvironmentThreadShell) => void;
+  /** Resolves the new thread's id once the server accepts the fork, or null. */
+  readonly forkThread: (
+    thread: EnvironmentThreadShell,
+    worktree: ThreadForkWorktreeMode,
+  ) => Promise<ThreadId | null>;
   readonly settleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly snoozeThread: (thread: EnvironmentThreadShell, snoozedUntil: string) => Promise<boolean>;
   readonly unsnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unsettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
 } {
   const executeAction = useThreadActionExecutor();
+  const createMutation = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const snoozeMutation = useAtomCommand(threadEnvironment.snooze, { reportFailure: false });
   const unsnoozeMutation = useAtomCommand(threadEnvironment.unsnooze, { reportFailure: false });
+  const forkInFlightThreadKeys = useRef(new Set<string>());
   const snoozeInFlightThreadKeys = useRef(new Set<string>());
 
   const archiveThread = useCallback(
@@ -217,6 +240,53 @@ export function useThreadListActions(): {
   const settleThread = useCallback(
     async (thread: EnvironmentThreadShell) => (await executeAction("settle", thread)) === true,
     [executeAction],
+  );
+  const forkThread = useCallback(
+    async (thread: EnvironmentThreadShell, worktree: ThreadForkWorktreeMode) => {
+      const key = scopedThreadKey(thread.environmentId, thread.id);
+      if (forkInFlightThreadKeys.current.has(key)) {
+        return null;
+      }
+      forkInFlightThreadKeys.current.add(key);
+      try {
+        // Every fork entry point hides itself when this is false, so reaching
+        // here means the thread changed under an open menu or sheet.
+        if (!environmentSupportsFork(thread)) {
+          Alert.alert(
+            "Could not fork thread",
+            "This thread can no longer be forked. It may be working, or its provider cannot fork.",
+          );
+          return null;
+        }
+
+        selectionHaptic();
+        // The new thread's id is minted here, not by the server, so the caller
+        // can navigate to it as soon as the command resolves.
+        const forkedThreadId = ThreadId.make(uuidv4());
+        const result = await createMutation({
+          environmentId: thread.environmentId,
+          input: buildThreadForkCreateInput({
+            source: thread,
+            threadId: forkedThreadId,
+            worktree,
+          }),
+        });
+        if (result._tag === "Failure") {
+          const error = Cause.squash(result.cause);
+          Alert.alert(
+            "Could not fork thread",
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : "The thread could not be forked.",
+          );
+          return null;
+        }
+        return forkedThreadId;
+      } finally {
+        forkInFlightThreadKeys.current.delete(key);
+      }
+    },
+    [createMutation],
   );
   const snoozeThread = useCallback(
     async (thread: EnvironmentThreadShell, snoozedUntil: string) => {
@@ -316,6 +386,7 @@ export function useThreadListActions(): {
   return {
     archiveThread,
     confirmDeleteThread,
+    forkThread,
     settleThread,
     snoozeThread,
     unsnoozeThread,

@@ -435,6 +435,9 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     enabled: true,
     checkedAt,
     models,
+    // `session.fork` deep-copies the source's messages into a new session and
+    // never writes the source. T3 already uses it to survive a cwd change.
+    supportsThreadFork: true,
     probe: {
       installed: true,
       version,
