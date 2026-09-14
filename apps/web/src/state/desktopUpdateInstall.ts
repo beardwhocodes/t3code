@@ -46,14 +46,20 @@ export function createDesktopUpdateInstallController() {
       resolve?.(choice === "now");
     },
     cancel,
+    observeUpdate: (update: DesktopUpdateState, onError: (message: string) => void) => {
+      if (state.status !== "installing" || update.errorContext !== "install") return;
+      cancel();
+      onError(update.message ?? "The update could not be installed. Please try again.");
+    },
     tryInstall: async (
       bridge: Pick<DesktopBridge, "getUpdateState" | "installUpdate">,
       isIdle: () => boolean,
       onError: (message: string) => void,
+      prepare: () => Promise<boolean>,
     ) => {
       if (state.status !== "waiting") return;
       const request = state;
-      let ownsInstallation = false;
+      let installation: DesktopUpdateInstallState | undefined;
       try {
         const update = await bridge.getUpdateState();
         if (state !== request) return;
@@ -69,9 +75,21 @@ export function createDesktopUpdateInstallController() {
           return;
         }
         if (!isIdle()) return;
-        ownsInstallation = true;
-        publish({ status: "installing", version: request.version });
-        const result = await bridge.installUpdate();
+        if (!(await prepare()) || state !== request || !isIdle()) return;
+        installation = { status: "installing", version: request.version };
+        publish(installation);
+        const result = await bridge.installUpdate({ expectedVersion: request.version });
+        if (state !== installation) return;
+        // A competing check invalidates the readiness admission. Wait for its
+        // state event, then ask the servers again before attempting installation.
+        if (
+          !result.accepted &&
+          result.state.status === "checking" &&
+          result.state.downloadedVersion === request.version
+        ) {
+          publish(request);
+          return;
+        }
         // Installation normally closes the window. A rejected/failed attempt must
         // never automatically retry and repeatedly interrupt the user's work.
         if (!result.accepted || result.state.errorContext === "install") {
@@ -79,7 +97,7 @@ export function createDesktopUpdateInstallController() {
           onError(result.state.message ?? "The update could not be installed. Please try again.");
         }
       } catch (error) {
-        if (state !== request && !ownsInstallation) return;
+        if (state !== request && state !== installation) return;
         cancel();
         onError(error instanceof Error ? error.message : "The update could not be installed.");
       }

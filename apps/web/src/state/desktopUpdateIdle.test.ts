@@ -9,7 +9,8 @@ import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createDesktopUpdateIdleAtom, isThreadBlockingDesktopRestart } from "./desktopUpdateIdle";
+import { createDesktopUpdateIdleAtom } from "./desktopUpdateIdle";
+import { isThreadBlockingRestart } from "@t3tools/contracts";
 
 const LOCAL = EnvironmentId.make("local");
 const REMOTE = EnvironmentId.make("remote");
@@ -82,6 +83,28 @@ describe("desktop restart readiness", () => {
     expect(registry.get(idle)).toBe(true);
     registry.dispose();
   });
+  it("allows remote-only desktop once its catalog and live snapshots are ready", () => {
+    const catalog = Atom.make<EnvironmentCatalogState>({ isReady: false, entries: new Map() });
+    const shells = Atom.family((_id: EnvironmentId) =>
+      Atom.make<EnvironmentShellState>(shellState("empty")),
+    );
+    const idle = createDesktopUpdateIdleAtom({
+      catalogValueAtom: catalog,
+      shellStateValueAtom: shells,
+      requiresPrimaryEnvironment: false,
+    });
+    const registry = AtomRegistry.make();
+    expect(registry.get(idle)).toBe(false);
+    registry.set(catalog, catalogState([REMOTE]));
+    expect(registry.get(idle)).toBe(false);
+    registry.set(shells(REMOTE), shellState("live"));
+    expect(registry.get(idle)).toBe(true);
+    registry.set(shells(REMOTE), shellState("cached"));
+    expect(registry.get(idle)).toBe(false);
+    registry.set(catalog, catalogState([]));
+    expect(registry.get(idle)).toBe(true);
+    registry.dispose();
+  });
   const ready = {
     session: null,
     latestTurn: null,
@@ -90,15 +113,13 @@ describe("desktop restart readiness", () => {
     backgroundLiveness: null,
   };
   it("allows settled threads and monitoring-only activity", () => {
-    expect(isThreadBlockingDesktopRestart(ready)).toBe(false);
-    expect(isThreadBlockingDesktopRestart({ ...ready, backgroundLiveness: "monitoring" })).toBe(
-      false,
-    );
+    expect(isThreadBlockingRestart(ready)).toBe(false);
+    expect(isThreadBlockingRestart({ ...ready, backgroundLiveness: "monitoring" })).toBe(false);
   });
   it("waits for background work and pending requests", () => {
-    expect(isThreadBlockingDesktopRestart({ ...ready, backgroundLiveness: "working" })).toBe(true);
-    expect(isThreadBlockingDesktopRestart({ ...ready, hasPendingApprovals: true })).toBe(true);
-    expect(isThreadBlockingDesktopRestart({ ...ready, hasPendingUserInput: true })).toBe(true);
+    expect(isThreadBlockingRestart({ ...ready, backgroundLiveness: "working" })).toBe(true);
+    expect(isThreadBlockingRestart({ ...ready, hasPendingApprovals: true })).toBe(true);
+    expect(isThreadBlockingRestart({ ...ready, hasPendingUserInput: true })).toBe(true);
   });
   it("waits for active sessions and turns even without pending requests", () => {
     const session = {
@@ -110,21 +131,21 @@ describe("desktop restart readiness", () => {
       lastError: null,
       updatedAt: "2026-09-14T00:00:00Z",
     };
-    expect(isThreadBlockingDesktopRestart({ ...ready, session })).toBe(false);
+    expect(isThreadBlockingRestart({ ...ready, session })).toBe(false);
+    expect(isThreadBlockingRestart({ ...ready, session: { ...session, status: "starting" } })).toBe(
+      true,
+    );
+    expect(isThreadBlockingRestart({ ...ready, session: { ...session, status: "running" } })).toBe(
+      true,
+    );
     expect(
-      isThreadBlockingDesktopRestart({ ...ready, session: { ...session, status: "starting" } }),
-    ).toBe(true);
-    expect(
-      isThreadBlockingDesktopRestart({ ...ready, session: { ...session, status: "running" } }),
-    ).toBe(true);
-    expect(
-      isThreadBlockingDesktopRestart({
+      isThreadBlockingRestart({
         ...ready,
         session: { ...session, activeTurnId: TurnId.make("turn") },
       }),
     ).toBe(true);
     expect(
-      isThreadBlockingDesktopRestart({
+      isThreadBlockingRestart({
         ...ready,
         latestTurn: {
           turnId: TurnId.make("turn"),

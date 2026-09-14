@@ -39,6 +39,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
+  awaitRestartReady: "orchestration.awaitRestartReady",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -2217,6 +2218,10 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationSearchThreadsInput,
     output: OrchestrationSearchThreadsResult,
   },
+  awaitRestartReady: {
+    input: Schema.Struct({}),
+    output: Schema.Boolean,
+  },
   getArchivedShellSnapshot: {
     input: Schema.Struct({}),
     output: OrchestrationShellSnapshot,
@@ -2271,3 +2276,21 @@ export class OrchestrationSearchThreadsError extends Schema.TaggedError<Orchestr
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
+
+/** Whether a thread still has work that must finish before restarting its environment. */
+export function isThreadBlockingRestart(
+  thread: Pick<
+    OrchestrationThreadShell,
+    "session" | "latestTurn" | "hasPendingApprovals" | "hasPendingUserInput" | "backgroundLiveness"
+  >,
+): boolean {
+  return (
+    thread.session?.status === "starting" ||
+    thread.session?.status === "running" ||
+    thread.session?.activeTurnId != null ||
+    thread.latestTurn?.state === "running" ||
+    thread.hasPendingApprovals ||
+    thread.hasPendingUserInput ||
+    thread.backgroundLiveness === "working"
+  );
+}

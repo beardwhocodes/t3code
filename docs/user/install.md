@@ -136,6 +136,9 @@ restart dialog in the sidebar or Settings. T3 Code waits until threads across
 enabled environments finish, including pending approval or input requests and
 working background agents. Monitoring-only activity does not hold up the restart.
 Disconnected environments pause the wait until their live state is available.
+T3 Code also waits for final messages and checkpoints to be saved. Remote-only
+desktop mode supports automatic restart too. If an environment cannot verify
+readiness, the restart is cancelled; update that environment before trying again.
 
 Keep the desktop window open. A banner shows the pending restart and offers
 **Cancel restart**. Closing or reloading the window cancels the request. You can

@@ -28,7 +28,7 @@ export interface ProviderCommandReactorShape {
 
   /**
    * Resolves when the internal processing queue is empty and idle.
-   * Intended for test use to replace timing-sensitive sleeps.
+   * Used by restart readiness and tests to wait for processing to finish.
    */
   readonly drain: Effect.Effect<void>;
 }

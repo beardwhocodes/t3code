@@ -1,3 +1,7 @@
+import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
+import { isLocalEnvironmentDisabled } from "../localEnvironment";
+import { useAtomCommand } from "../state/use-atom-command";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { useContext, useEffect, useSyncExternalStore } from "react";
 import { environmentCatalog } from "../connection/catalog";
@@ -18,12 +22,21 @@ import { Button } from "./ui/button";
 import { toastManager } from "./ui/toast";
 
 const idleAtom = createDesktopUpdateIdleAtom({
+  requiresPrimaryEnvironment: !isLocalEnvironmentDisabled(),
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   shellStateValueAtom: environmentShell.stateValueAtom,
 });
 
+function reportInstallError(description: string) {
+  toastManager.add({ type: "error", title: "Automatic restart cancelled", description });
+}
+
 function ScheduledRestart() {
   const idle = useAtomValue(idleAtom);
+  const awaitReady = useAtomCommand(orchestrationEnvironment.awaitRestartReady, {
+    reportFailure: false,
+    reportDefect: false,
+  });
   const registry = useContext(RegistryContext);
   const update = useDesktopUpdateState();
   useEffect(() => {
@@ -32,15 +45,29 @@ function ScheduledRestart() {
     void desktopUpdateInstall.tryInstall(
       bridge,
       () => idle && registry.get(idleAtom),
-      (description) => {
-        toastManager.add({ type: "error", title: "Automatic restart cancelled", description });
+      reportInstallError,
+      async () => {
+        const ids = [...enabledEnvironmentIds(registry.get(environmentCatalog.catalogValueAtom))];
+        const results = await Promise.all(
+          ids.map((environmentId) => awaitReady({ environmentId, input: {} })),
+        );
+        if (results.some((result) => result._tag === "Failure")) {
+          throw new Error(
+            "Could not verify that all environments finished their work. Reconnect and schedule the restart again.",
+          );
+        }
+        return results.every((result) => result._tag === "Success" && result.value);
       },
     );
-  }, [idle, registry, update]);
+  }, [idle, registry, update, awaitReady]);
   return null;
 }
 
 export function DesktopUpdateInstallCoordinator() {
+  const update = useDesktopUpdateState();
+  useEffect(() => {
+    if (update) desktopUpdateInstall.observeUpdate(update, reportInstallError);
+  }, [update]);
   const state = useSyncExternalStore(
     desktopUpdateInstall.subscribe,
     desktopUpdateInstall.getSnapshot,
