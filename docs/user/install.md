@@ -128,3 +128,15 @@ For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 - [Remote access](./remote-access.md): connect from another device.
 - [Running in the background](./background-service.md): keep a Linux or macOS host available.
 - [Updating T3 Code](./updating.md): update the app and connected servers.
+
+## Restart automatically after an update
+
+After a desktop update downloads, choose **Restart when threads finish** from the
+restart dialog in the sidebar or Settings. T3 Code waits until threads across
+enabled environments finish, including pending approval or input requests and
+working background agents. Monitoring-only activity does not hold up the restart.
+Disconnected environments pause the wait until their live state is available.
+
+Keep the desktop window open. A banner shows the pending restart and offers
+**Cancel restart**. Closing or reloading the window cancels the request. You can
+also choose **Restart now** in the dialog to install immediately.
