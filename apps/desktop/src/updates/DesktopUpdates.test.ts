@@ -656,6 +656,34 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
+  it.effect("refuses an automatic install immediately while a check is active", () =>
+    Effect.gen(function* () {
+      const checkStarted = yield* Deferred.make<void>();
+      const releaseCheck = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        checkForUpdates: Deferred.succeed(checkStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseCheck)),
+        ),
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          harness.emit("update-downloaded", { version: "1.2.4" });
+          yield* flushCallbacks;
+          const checking = yield* updates.check("test").pipe(Effect.forkChild);
+          yield* Deferred.await(checkStarted);
+          const result = yield* updates.installPrepared("1.2.4", { waitForCheck: false });
+          assert.isFalse(result.accepted);
+          assert.equal(result.state.status, "checking");
+          assert.equal(harness.quitAndInstalls(), 0);
+          yield* Deferred.succeed(releaseCheck, undefined);
+          yield* Fiber.join(checking);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    }),
+  );
+
   it.effect("rejects a prepared install when the downloaded version changed", () => {
     const harness = makeHarness();
 

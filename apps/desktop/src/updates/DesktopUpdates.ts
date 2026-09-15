@@ -185,6 +185,7 @@ export class DesktopUpdates extends Context.Service<
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
     readonly installPrepared: (
       expectedVersion: string,
+      options?: { readonly waitForCheck: boolean },
     ) => Effect.Effect<DesktopPreparedUpdateInstallResult>;
   }
 >()("@t3tools/desktop/updates/DesktopUpdates") {}
@@ -535,7 +536,7 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const installDownloadedUpdate = (expectedVersion?: string) =>
+  const installDownloadedUpdate = (expectedVersion?: string, waitForCheck = true) =>
     Effect.scoped(
       Effect.gen(function* () {
         const actionCompletions = yield* PubSub.subscribe(finishedUpdateActions);
@@ -556,7 +557,9 @@ export const make = Effect.gen(function* () {
                 return "refused" as const;
               }
               if (Option.isSome(activeAction)) {
-                return activeAction.value === "check" && expectedVersion !== undefined
+                return waitForCheck &&
+                  activeAction.value === "check" &&
+                  expectedVersion !== undefined
                   ? ("wait-for-check" as const)
                   : ("refused" as const);
               }
@@ -638,7 +641,7 @@ export const make = Effect.gen(function* () {
       }),
     ).pipe(Effect.withSpan("desktop.updates.installDownloadedUpdate"));
 
-  const installWithExpectedVersion = (expectedVersion?: string) =>
+  const installWithExpectedVersion = (expectedVersion?: string, waitForCheck = true) =>
     Effect.gen(function* () {
       if (yield* Ref.get(desktopState.quitting)) {
         return {
@@ -648,7 +651,7 @@ export const make = Effect.gen(function* () {
           state: yield* Ref.get(updateStateRef),
         };
       }
-      const result = yield* installDownloadedUpdate(expectedVersion);
+      const result = yield* installDownloadedUpdate(expectedVersion, waitForCheck);
       return {
         accepted: result.accepted,
         completed: result.completed,
@@ -989,7 +992,8 @@ export const make = Effect.gen(function* () {
     install: installWithExpectedVersion().pipe(
       Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
     ),
-    installPrepared: (expectedVersion) => installWithExpectedVersion(expectedVersion),
+    installPrepared: (expectedVersion, options) =>
+      installWithExpectedVersion(expectedVersion, options?.waitForCheck ?? true),
   });
 });
 

@@ -1,3 +1,6 @@
+import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
+import { ProviderRuntimeIngestionService } from "./orchestration/Services/ProviderRuntimeIngestion.ts";
+import { CheckpointReactor } from "./orchestration/Services/CheckpointReactor.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -972,6 +975,12 @@ const buildAppUnderTest = (options?: {
             latestSequence: Effect.succeed(0),
             ...options?.layers?.orchestrationEngine,
           }),
+          Layer.mock(ProviderCommandReactor)({ start: () => Effect.void, drain: Effect.void }),
+          Layer.mock(ProviderRuntimeIngestionService)({
+            start: () => Effect.void,
+            drain: Effect.void,
+          }),
+          Layer.mock(CheckpointReactor)({ start: () => Effect.void, drain: Effect.void }),
           Layer.mock(ThreadDeletionReactor)({
             start: () => Effect.void,
             drainThrough: () => Effect.void,
@@ -8137,6 +8146,17 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
         yield* Deferred.await(localRefreshStarted);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes restart readiness through the authenticated websocket", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const ready = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) => client[ORCHESTRATION_WS_METHODS.awaitRestartReady]({})),
+      );
+      assert.isTrue(ready);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("routes websocket rpc orchestration methods", () =>

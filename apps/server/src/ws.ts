@@ -1,3 +1,7 @@
+import { awaitRestartReady } from "./orchestration/restartReadiness.ts";
+import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
+import { ProviderRuntimeIngestionService } from "./orchestration/Services/ProviderRuntimeIngestion.ts";
+import { CheckpointReactor } from "./orchestration/Services/CheckpointReactor.ts";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -1895,6 +1899,35 @@ const makeWsRpcLayer = (
                 synchronizedThenLive,
               );
             }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.awaitRestartReady]: () =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.awaitRestartReady,
+            Effect.gen(function* () {
+              const commands = yield* ProviderCommandReactor;
+              const ingestion = yield* ProviderRuntimeIngestionService;
+              const checkpoints = yield* CheckpointReactor;
+              return yield* awaitRestartReady({
+                readThreads: Effect.all([
+                  projectionSnapshotQuery.getShellSnapshot(),
+                  projectionSnapshotQuery.getArchivedShellSnapshot(),
+                ]).pipe(
+                  Effect.map(([active, archived]) => [...active.threads, ...archived.threads]),
+                ),
+                drainCommands: commands.drain,
+                drainIngestion: ingestion.drain,
+                drainCheckpoints: checkpoints.drain,
+              });
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to establish restart readiness",
+                    cause,
+                  }),
+              ),
+            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
