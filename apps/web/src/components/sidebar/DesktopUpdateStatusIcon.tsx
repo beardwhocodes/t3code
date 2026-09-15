@@ -1,5 +1,5 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { CheckIcon, DownloadIcon, RotateCwIcon } from "lucide-react";
+import { CheckIcon, ClockIcon, DownloadIcon, RotateCwIcon } from "lucide-react";
 import type { AnimationEventHandler } from "react";
 
 const DOWNLOAD_PROGRESS_RADIUS = 14;
@@ -10,7 +10,8 @@ export type DesktopUpdateStatusIconState =
   | "checking"
   | "available"
   | "downloading"
-  | "downloaded";
+  | "downloaded"
+  | "scheduled";
 
 function normalizeDesktopUpdateDownloadPercent(percent: number | null): number {
   if (percent === null || !Number.isFinite(percent)) return 0;
@@ -88,12 +89,16 @@ function DesktopUpdateDownloadingIcon({ percent }: { readonly percent: number | 
   );
 }
 
-function DesktopUpdateDownloadedIcon() {
+function DesktopUpdateDownloadedIcon({ scheduled = false }: { readonly scheduled?: boolean }) {
   return (
     <span className="relative grid size-4 place-items-center">
       <RotateCwIcon className="size-4" />
       <span className="absolute -right-1 -bottom-1 grid size-2.5 place-items-center rounded-full bg-foreground text-background ring-2 ring-background">
-        <CheckIcon className="size-2" strokeWidth={3} />
+        {scheduled ? (
+          <ClockIcon className="size-2" strokeWidth={2.5} />
+        ) : (
+          <CheckIcon className="size-2" strokeWidth={3} />
+        )}
       </span>
     </span>
   );
@@ -114,6 +119,7 @@ export function DesktopUpdateStatusIcon({
   if (status === "downloading") {
     return <DesktopUpdateDownloadingIcon percent={downloadPercent ?? null} />;
   }
+  if (status === "scheduled") return <DesktopUpdateDownloadedIcon scheduled />;
   if (status === "downloaded") return <DesktopUpdateDownloadedIcon />;
 
   return (

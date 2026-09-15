@@ -1,4 +1,8 @@
-import { requestDesktopUpdateInstall } from "../../state/desktopUpdateInstall";
+import {
+  desktopUpdateInstall,
+  requestDesktopUpdateInstall,
+  useDesktopUpdateInstallState,
+} from "../../state/desktopUpdateInstall";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import { TriangleAlertIcon } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useId, useRef, useState } from "react";
@@ -113,6 +117,9 @@ export function SidebarUpdatePill() {
 
 function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
+  const installState = useDesktopUpdateInstallState();
+  const isWaiting = installState.status === "waiting";
+  const isInstalling = installState.status === "installing";
   const [isActionPending, setIsActionPending] = useState(false);
   const [checkAnimationKey, setCheckAnimationKey] = useState(0);
   const [isCheckAnimationLatched, setIsCheckAnimationLatched] = useState(false);
@@ -142,23 +149,31 @@ function SidebarUpdateControl() {
     isDownloading,
     showCheckIcon,
   });
-  const tooltip = showUpdateDetails
-    ? state
-      ? getDesktopUpdateButtonTooltip(state)
-      : "Update available"
-    : showCheckIcon
-      ? "Checking for updates…"
-      : "Check for updates";
-  const disabled = showCheckIcon
+  const tooltip = isWaiting
+    ? `Update ${installState.version} will install when threads finish. Click to cancel restart.`
+    : isInstalling
+      ? "Restarting to install update…"
+      : showUpdateDetails
+        ? state
+          ? getDesktopUpdateButtonTooltip(state)
+          : "Update available"
+        : showCheckIcon
+          ? "Checking for updates…"
+          : "Check for updates";
+  const disabled = isInstalling
     ? true
-    : showUpdateDetails
-      ? isDesktopUpdateButtonDisabled(state)
-      : !canCheckForUpdate(state);
+    : isWaiting
+      ? false
+      : showCheckIcon
+        ? true
+        : showUpdateDetails
+          ? isDesktopUpdateButtonDisabled(state)
+          : !canCheckForUpdate(state);
   const isInteractionDisabled = disabled || isActionPending;
-  const showReleaseNotesPopover = shouldUseSidebarUpdateReleaseNotesPopover(
-    showUpdateDetails,
-    state,
-  );
+  const showReleaseNotesPopover =
+    !isWaiting &&
+    !isInstalling &&
+    shouldUseSidebarUpdateReleaseNotesPopover(showUpdateDetails, state);
 
   useEffect(() => {
     if (!showReleaseNotesPopover) {
@@ -176,6 +191,11 @@ function SidebarUpdateControl() {
     const bridge = window.desktopBridge;
     if (!bridge || !state) return;
     if (isInteractionDisabled) return;
+
+    if (isWaiting) {
+      desktopUpdateInstall.cancel();
+      return;
+    }
 
     setIsActionPending(true);
 
@@ -283,7 +303,7 @@ function SidebarUpdateControl() {
         );
       })
       .finally(() => setIsActionPending(false));
-  }, [action, isInteractionDisabled, prefersReducedMotion, state]);
+  }, [action, isInteractionDisabled, isWaiting, prefersReducedMotion, state]);
 
   const handleCheckAnimationIteration = useCallback(() => {
     setIsCheckAnimationLatched(
@@ -337,9 +357,9 @@ function SidebarUpdateControl() {
       <DesktopUpdateStatusIcon
         key={showCheckIcon ? checkAnimationKey : iconStatus}
         downloadPercent={state?.downloadPercent ?? null}
-        isCheckAnimating={showCheckIcon && !prefersReducedMotion}
+        isCheckAnimating={showCheckIcon && !isWaiting && !isInstalling && !prefersReducedMotion}
         onCheckAnimationIteration={handleCheckAnimationIteration}
-        status={iconStatus}
+        status={isWaiting || isInstalling ? "scheduled" : iconStatus}
       />
     </button>
   );

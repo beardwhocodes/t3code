@@ -140,6 +140,6 @@ T3 Code also waits for final messages and checkpoints to be saved. Remote-only
 desktop mode supports automatic restart too. If an environment cannot verify
 readiness, the restart is cancelled; update that environment before trying again.
 
-Keep the desktop window open. A banner shows the pending restart and offers
-**Cancel restart**. Closing or reloading the window cancels the request. You can
+Keep the desktop window open. The update icon shows a clock while a restart is
+scheduled. Click it or choose **Cancel restart** in Settings to cancel. Closing or reloading the window cancels the request. You can
 also choose **Restart now** in the dialog to install immediately.

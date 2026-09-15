@@ -3,12 +3,12 @@ import { isLocalEnvironmentDisabled } from "../localEnvironment";
 import { useAtomCommand } from "../state/use-atom-command";
 import { orchestrationEnvironment } from "../state/orchestration";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
-import { useContext, useEffect, useSyncExternalStore } from "react";
+import { useContext, useEffect } from "react";
 import { environmentCatalog } from "../connection/catalog";
 import { isElectron } from "../env";
 import { useDesktopUpdateState } from "../state/desktopUpdate";
 import { createDesktopUpdateIdleAtom } from "../state/desktopUpdateIdle";
-import { desktopUpdateInstall } from "../state/desktopUpdateInstall";
+import { desktopUpdateInstall, useDesktopUpdateInstallState } from "../state/desktopUpdateInstall";
 import { environmentShell } from "../state/shell";
 import {
   AlertDialog,
@@ -68,33 +68,12 @@ export function DesktopUpdateInstallCoordinator() {
   useEffect(() => {
     if (update) desktopUpdateInstall.observeUpdate(update, reportInstallError);
   }, [update]);
-  const state = useSyncExternalStore(
-    desktopUpdateInstall.subscribe,
-    desktopUpdateInstall.getSnapshot,
-    desktopUpdateInstall.getSnapshot,
-  );
+  const state = useDesktopUpdateInstallState();
   useEffect(() => () => desktopUpdateInstall.cancel(), []);
   if (!isElectron) return null;
   return (
     <>
       {state.status === "waiting" ? <ScheduledRestart /> : null}
-      {state.status === "waiting" || state.status === "installing" ? (
-        <div
-          role="status"
-          className="fixed bottom-4 left-1/2 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-lg border bg-popover px-4 py-3 text-sm text-popover-foreground shadow-lg"
-        >
-          <span>
-            {state.status === "installing"
-              ? "Restarting to install update…"
-              : `Update ${state.version} will install when threads finish. Keep this window open.`}
-          </span>
-          {state.status === "waiting" ? (
-            <Button variant="outline" size="sm" onClick={desktopUpdateInstall.cancel}>
-              Cancel restart
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
       <AlertDialog
         open={state.status === "confirming"}
         onOpenChange={(open) => {

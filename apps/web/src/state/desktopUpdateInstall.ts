@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { resolveDesktopUpdateButtonAction } from "../components/desktopUpdate.logic";
 
@@ -107,3 +108,11 @@ export function createDesktopUpdateInstallController() {
 
 export const desktopUpdateInstall = createDesktopUpdateInstallController();
 export const requestDesktopUpdateInstall = desktopUpdateInstall.request;
+
+export function useDesktopUpdateInstallState() {
+  return useSyncExternalStore(
+    desktopUpdateInstall.subscribe,
+    desktopUpdateInstall.getSnapshot,
+    desktopUpdateInstall.getSnapshot,
+  );
+}

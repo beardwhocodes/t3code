@@ -1,4 +1,8 @@
-import { requestDesktopUpdateInstall } from "../../state/desktopUpdateInstall";
+import {
+  desktopUpdateInstall,
+  requestDesktopUpdateInstall,
+  useDesktopUpdateInstallState,
+} from "../../state/desktopUpdateInstall";
 import { Spinner } from "~/components/ui/spinner";
 import { NotificationSettings } from "./NotificationSettings";
 import { ArchiveIcon, ArchiveX, ChevronRightIcon, SettingsIcon } from "lucide-react";
@@ -268,6 +272,9 @@ function AboutVersionTitle() {
 }
 
 function AboutVersionSection() {
+  const installState = useDesktopUpdateInstallState();
+  const isWaiting = installState.status === "waiting";
+  const isInstalling = installState.status === "installing";
   const updateState = useDesktopUpdateState();
   const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
   const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
@@ -307,6 +314,11 @@ function AboutVersionSection() {
   );
 
   const handleButtonClick = useCallback(async () => {
+    if (isInstalling) return;
+    if (isWaiting) {
+      desktopUpdateInstall.cancel();
+      return;
+    }
     const bridge = window.desktopBridge;
     if (!bridge) return;
 
@@ -385,14 +397,23 @@ function AboutVersionSection() {
           }),
         );
       });
-  }, [isUpdateActionPending, updateState]);
+  }, [isInstalling, isWaiting, isUpdateActionPending, updateState]);
 
   const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
-  const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
-  const buttonDisabled =
-    action === "none"
-      ? !canCheckForUpdate(updateState)
-      : isDesktopUpdateButtonDisabled(updateState);
+  const buttonTooltip = isWaiting
+    ? "Cancel the scheduled restart"
+    : isInstalling
+      ? "Restarting to install update…"
+      : updateState
+        ? getDesktopUpdateButtonTooltip(updateState)
+        : null;
+  const buttonDisabled = isInstalling
+    ? true
+    : isWaiting
+      ? false
+      : action === "none"
+        ? !canCheckForUpdate(updateState)
+        : isDesktopUpdateButtonDisabled(updateState);
 
   const actionLabel: Record<string, string> = { download: "Download", install: "Install" };
   const statusLabel: Record<string, string> = {
@@ -400,12 +421,18 @@ function AboutVersionSection() {
     downloading: "Downloading…",
     "up-to-date": "Up to Date",
   };
-  const buttonLabel =
-    actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
-  const description =
-    action === "download" || action === "install"
-      ? "Update available."
-      : "Current version of the application.";
+  const buttonLabel = isWaiting
+    ? "Cancel restart"
+    : isInstalling
+      ? "Restarting…"
+      : (actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates");
+  const description = isWaiting
+    ? "The update will install when threads finish. Keep this window open."
+    : isInstalling
+      ? "Restarting to install the update."
+      : action === "download" || action === "install"
+        ? "Update available."
+        : "Current version of the application.";
 
   return (
     <>
